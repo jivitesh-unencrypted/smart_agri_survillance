@@ -25,7 +25,7 @@ ai-server/models/*
 *.sqlite3
 
 # ---- Frontend ----
-frontend/node_modules/
+**/node_modules/
 frontend/dist/
 frontend/.vite/
 
@@ -34,3 +34,4 @@ frontend/.vite/
 .idea/
 .DS_Store
 Thumbs.db
+
