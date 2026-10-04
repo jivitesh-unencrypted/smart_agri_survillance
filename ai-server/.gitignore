@@ -1,0 +1,20 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Local-only runtime state (offline outbox, camera credential key)
+data/
+
+# Generated media - never commit snapshots/recordings/uploads
+storage/snapshots/**
+storage/recordings/**
+storage/uploads/**
+!storage/snapshots/.gitkeep
+!storage/recordings/.gitkeep
+!storage/uploads/.gitkeep
+
+# Keep the folder, ignore the weights themselves
+models/*
+!models/.gitkeep

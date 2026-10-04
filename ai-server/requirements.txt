@@ -1,0 +1,24 @@
+# ---- Web framework ----
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+websockets>=12.0
+
+# ---- Supabase (Postgres + Auth + Storage) ----
+# The only "database" layer now: there is no SQLAlchemy/SQLite backend.
+# SUPABASE_SERVICE_ROLE_KEY is used server-side ONLY - never send it to a browser.
+supabase>=2.32.0
+
+# ---- Settings / env ----
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.1
+
+# ---- AI / Computer Vision (100% local inference, no paid APIs) ----
+ultralytics>=8.3.0
+opencv-python-headless>=4.9.0
+numpy>=1.26.0
+pillow>=10.2.0
+
+# ---- Misc ----
+requests>=2.31.0

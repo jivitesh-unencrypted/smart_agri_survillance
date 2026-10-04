@@ -1,0 +1,36 @@
+# ---- Python / AI server ----
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# ---- Secrets - never commit ----
+**/.env
+**/.env.local
+**/.env.*.local
+
+# ---- Local runtime state ----
+ai-server/data/
+ai-server/storage/snapshots/**
+ai-server/storage/recordings/**
+ai-server/storage/uploads/**
+!ai-server/storage/**/.gitkeep
+ai-server/models/*
+!ai-server/models/.gitkeep
+
+# ---- Old SQLite backend (pre-migration, kept only as a migration source) ----
+*.db
+*.sqlite3
+
+# ---- Frontend ----
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
