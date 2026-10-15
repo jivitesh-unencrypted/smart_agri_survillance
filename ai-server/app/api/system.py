@@ -55,11 +55,20 @@ class HealthResponse(BaseModel):
     pending_sync_events: int
 
 
-def _active_camera_count(request: Request) -> int:
+def _active_camera_count(request: Request, owned_camera_ids: Optional[set]) -> int:
+    """
+    Count of cameras that are running RIGHT NOW, scoped to the caller.
+
+    `owned_camera_ids` is the caller's own camera ids. `manager.active_camera_ids()`
+    spans every camera on this machine, so returning its length directly would
+    tell one user how many cameras another user has running - a small leak, but
+    a leak. When the caller has no cameras, the answer is 0 regardless of what
+    is streaming.
+    """
     manager = getattr(request.app.state, "stream_manager", None)
-    if manager is None:
+    if manager is None or owned_camera_ids is None:
         return 0
-    return len(manager.active_camera_ids())
+    return sum(1 for cid in manager.active_camera_ids() if cid in owned_camera_ids)
 
 
 @router.get("/status", response_model=SystemStatus)
@@ -68,10 +77,14 @@ def system_status(request: Request, user: dict = Depends(require_authenticated_u
     cloud = sc.cloud_status()
 
     total_cameras = 0
+    owned_camera_ids: Optional[set] = None
     database_ok = False
     try:
-        cameras = cameras_repo.list_cameras()
+        # Scoped to the caller: this status panel must not reveal how many
+        # cameras exist across the whole installation.
+        cameras = cameras_repo.list_cameras(user_id=user["id"])
         total_cameras = len(cameras)
+        owned_camera_ids = {c["id"] for c in cameras}
         database_ok = True
     except sc.SupabaseUnavailable:
         database_ok = False
@@ -81,7 +94,7 @@ def system_status(request: Request, user: dict = Depends(require_authenticated_u
         model_name=getattr(detector, "model_name", None) or ("YOLO" if detector is not None else "unavailable"),
         model_error=get_load_error(),
         total_cameras=total_cameras,
-        active_cameras=_active_camera_count(request),
+        active_cameras=_active_camera_count(request, owned_camera_ids),
         database_ok=database_ok,
         uptime_seconds=round(time.monotonic() - _START_TIME, 1),
         cloud_configured=cloud["configured"],

@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { formatTime, categoryColor, severityColor } from '../lib/utils'
 import KpiCard from '../components/KpiCard.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
+import { useUserScope } from '../lib/userScope'
 
 export default function Dashboard({ socket }) {
   const [summary, setSummary] = useState(null)
@@ -14,6 +15,11 @@ export default function Dashboard({ socket }) {
   const [systemStatus, setSystemStatus] = useState(null)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
+  // Every query below is already scoped to the caller by RLS / the AI server's
+  // ownership checks. The epoch additionally forces an immediate refetch on an
+  // account change so the panel never shows the previous account's numbers
+  // between the switch and the next 15s poll.
+  const epoch = useUserScope()
 
   const loadAll = useCallback(async () => {
     try {
@@ -38,7 +44,7 @@ export default function Dashboard({ socket }) {
     loadAll()
     const interval = setInterval(loadAll, 15000)
     return () => clearInterval(interval)
-  }, [loadAll])
+  }, [loadAll, epoch])
 
   // Refresh once shortly after any live detection/alert event comes in.
   useEffect(() => {

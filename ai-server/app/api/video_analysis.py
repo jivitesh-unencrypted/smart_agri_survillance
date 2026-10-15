@@ -91,11 +91,13 @@ async def upload_video(file: UploadFile = File(...), user: dict = Depends(requir
     safe_name = re.sub(r"[^\w\-. ]", "_", original_name)[:150]
 
     try:
+        # The job is stamped with the uploader's verified id. Every detection
+        # the run later produces inherits this owner.
         job = jobs_repo.insert_job({
             "original_filename": safe_name,
             "status": "queued",
             "client_job_id": str(uuid.uuid4()),
-        })
+        }, user_id=user["id"])
     except sc.SupabaseUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -139,14 +141,18 @@ def _fail_job(job_id):
 
 @router.get("/jobs", response_model=VideoAnalysisJobListResponse)
 def list_jobs(user: dict = Depends(require_authenticated_user)):
-    rows = jobs_repo.list_jobs()
+    # Only this user's jobs - the repository filter is what enforces it,
+    # because the service-role key bypasses RLS.
+    rows = jobs_repo.list_jobs(user_id=user["id"])
     items = [_row_to_out(r) for r in rows]
     return VideoAnalysisJobListResponse(items=items, total=len(items))
 
 
 @router.get("/jobs/{job_id}", response_model=VideoAnalysisJobOut)
 def get_job(job_id: int, user: dict = Depends(require_authenticated_user)):
-    row = jobs_repo.get_job(job_id)
+    # Scoped by owner: another user's job reads as 404, not 403, so the API
+    # does not confirm that an id exists.
+    row = jobs_repo.get_job(job_id, user_id=user["id"])
     if row is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return _row_to_out(row)
@@ -154,6 +160,10 @@ def get_job(job_id: int, user: dict = Depends(require_authenticated_user)):
 
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: int, user: dict = Depends(require_authenticated_user)):
+    # Ownership is checked before the cancel is requested, so a caller cannot
+    # kill somebody else's running analysis by guessing its id.
+    if jobs_repo.get_job(job_id, user_id=user["id"]) is None:
+        raise HTTPException(status_code=404, detail="Job not found")
     if not video_analysis_service.request_cancel(job_id):
         raise HTTPException(status_code=400, detail="Job is not running or does not exist")
     return {"status": "cancel_requested"}

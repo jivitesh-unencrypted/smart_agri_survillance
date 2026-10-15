@@ -46,26 +46,45 @@ def upsert_detection(payload: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
-def get_detection_by_client_event_id(client_event_id: str) -> Optional[Dict[str, Any]]:
-    """Used by the outbox to resolve a queued alert's detection reference."""
+def get_detection_by_client_event_id(client_event_id: str,
+                                     user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Used by the outbox to resolve a queued alert's detection reference.
+
+    `user_id` is not optional in spirit: `client_event_id` is only unique per
+    owner, so a lookup without it could resolve to another account's detection
+    and silently cross-link the alert. The caller passes the payload's owner.
+    """
     if not client_event_id:
         return None
+    query = c.table("detections").select("*").eq("client_event_id", client_event_id)
+    if user_id is not None:
+        query = query.eq("user_id", user_id)
+    return sc.call(lambda c: sc.one(query.limit(1).execute()))
+
+
+def update_detection(detection_id: int, updates: Dict[str, Any],
+                     user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """`user_id` in `updates` is stripped - a detection's owner is not reassignable."""
+    updates = {k: v for k, v in updates.items() if k != "user_id"}
+    extra = {"user_id": user_id} if user_id is not None else None
+    return update_row("detections", detection_id, updates, extra_filters=extra)
+
+
+def get_detection(detection_id: int, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     return sc.call(
         lambda c: sc.one(
-            c.table("detections").select("*").eq("client_event_id", client_event_id).limit(1).execute()
+            c.table("detections").select("*")
+            .eq("id", detection_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
         )
     )
 
 
-def update_detection(detection_id: int, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    return update_row("detections", detection_id, updates)
-
-
-def get_detection(detection_id: int) -> Optional[Dict[str, Any]]:
-    return sc.call(lambda c: sc.one(c.table("detections").select("*").eq("id", detection_id).limit(1).execute()))
-
-
 def list_detections(
+    user_id: str,
     source: Optional[str] = None,
     category: Optional[str] = None,
     severity: Optional[str] = None,
@@ -76,9 +95,18 @@ def list_detections(
     page: int = 1,
     page_size: int = 25,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """Mirrors GET /api/detections including its filters and pagination."""
+    """
+    Mirrors GET /api/detections including its filters and pagination.
+
+    `user_id` is a REQUIRED first argument and is applied before every other
+    filter. It is not optional on purpose: this repository holds the
+    service-role key, which bypasses RLS, so an owner filter that a caller
+    could forget to pass would silently hand back every user's history.
+    """
 
     def _filters(query):
+        # Ownership first, unconditionally.
+        query = query.eq("user_id", user_id)
         if source:
             query = query.eq("source", source)
         if category:

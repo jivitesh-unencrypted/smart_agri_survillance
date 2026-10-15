@@ -100,12 +100,46 @@ def _run_job(job_id: int, file_path: Path):
     source_fps = cap.get(cv2.CAP_PROP_FPS) or None
     _update_job(job_id, total_frames=total_frames, source_fps=source_fps)
 
-    cfg = settings_repo.get_settings_or_defaults()
+    # A video-analysis job has no camera row to inherit an owner from, so the
+    # owner is read back from the job row itself - which was stamped from the
+    # verified access token when the upload was accepted. Every detection and
+    # alert this run produces therefore belongs to whoever uploaded the file,
+    # not to whoever happens to be signed in when the job finishes.
+    owner_id = None
+    try:
+        job_row = jobs_repo.get_job(job_id) or {}
+        owner_id = job_row.get("user_id")
+    except sc.SupabaseUnavailable as exc:
+        logger.error("Video analysis job %s: could not read its owner (%s)", job_id, exc)
+        owner_id = None
+
+    if not owner_id:
+        # Refuse to run rather than emit rows nobody can see. An unowned
+        # detection has `user_id IS NULL`, and the RLS policy is
+        # `auth.uid() = user_id`, so such a row is invisible to EVERY signed-in
+        # user: the job would report `event_count > 0` while the Detections
+        # page showed zero. A visible failure is strictly better than silently
+        # invisible data.
+        logger.error(
+            "Video analysis job %s has no resolvable owner; aborting instead of "
+            "writing detections that RLS would hide from every user", job_id,
+        )
+        _update_job(
+            job_id,
+            status="failed",
+            error_message="Could not determine the video's owner, so no detections were saved.",
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        _cleanup(file_path, job_id)
+        return
+
+    cfg = settings_repo.get_settings_or_defaults(owner_id)
     tracker = CameraEventTracker(
         camera_id=None,
         camera_name=file_path.name,
         location="Uploaded Video",
         video_analysis_job_id=job_id,
+        user_id=owner_id,
     )
 
     frame_index = 0

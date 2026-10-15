@@ -102,9 +102,24 @@ def idempotent_insert(
 
 
 def select_one(table: str, **filters) -> Optional[Dict[str, Any]]:
+    """
+    Fetches at most one row.
+
+    `None` filter values are SKIPPED, exactly as in `select_many`. This is not
+    cosmetic: the optional owner filters (`get_job(job_id)` with no `user_id`,
+    `get_alert(alert_id)`) pass `None` to mean "do not constrain this column".
+    PostgREST serialises a `None` criterion as the literal string `null`, so
+    `eq("user_id", None)` becomes `user_id=eq.null`, which is a hard 400 on a
+    `uuid` column (`22P02 invalid input syntax for type uuid: "null"`) and
+    matches nothing on a text one. Passing that through made every owner-less
+    lookup raise, which is what silently detached video-analysis detections
+    from their owner.
+    """
     def _run(client):
         q = client.table(table).select("*")
         for col, value in filters.items():
+            if value is None:
+                continue
             q = q.eq(col, value)
         return sc.one(q.limit(1).execute())
 
@@ -133,14 +148,26 @@ def select_many(
     return sc.call(_run)
 
 
-def update_row(table: str, row_id: Any, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def update_row(table: str, row_id: Any, updates: Dict[str, Any],
+               extra_filters: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """
+    Updates one row by primary key.
+
+    `extra_filters` adds further equality constraints - used to make an
+    update conditional on ownership (`user_id`). This matters because the
+    repositories run with the service-role key, which bypasses RLS: without
+    the owner constraint, "update camera 7" would happily rewrite another
+    user's row. A row that does not match returns None instead of raising,
+    which callers treat as 404/403.
+    """
     def _run(client):
         # Nones are kept here (unlike inserts) because clearing a column -
         # e.g. `last_error = None`, or detaching a snapshot path - is a
         # meaningful update.
-        return sc.one(
-            client.table(table).update(jsonable(updates)).eq("id", row_id).execute()
-        )
+        query = client.table(table).update(jsonable(updates)).eq("id", row_id)
+        for col, value in (extra_filters or {}).items():
+            query = query.eq(col, value)
+        return sc.one(query.execute())
 
     return sc.call(_run)
 

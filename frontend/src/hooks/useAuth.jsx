@@ -1,6 +1,15 @@
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react'
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from 'react'
 import { supabase, setToken } from '../lib/api'
 import { supabaseConfigError } from '../lib/supabase'
+import { UserScopeContext } from '../lib/userScope'
 
 const AuthContext = createContext(null)
 
@@ -19,10 +28,27 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [configError, setConfigError] = useState(null)
 
+  /**
+   * Monotonic generation counter guarding against a stale in-flight refresh.
+   *
+   * `refresh` awaits two network calls (the session, then the profile row).
+   * If a refresh started for user A is still awaiting when the user logs out
+   * and logs in as user B, A's profile response can resolve AFTER B's and
+   * overwrite `user` with A's details - the exact "logged out of A, logged
+   * into B, still seeing A" symptom. Each refresh captures the generation it
+   * started in and discards its own result if a newer one has begun, so only
+   * the newest refresh is ever allowed to commit state.
+   */
+  const generationRef = useRef(0)
+
   const refresh = useCallback(async () => {
+    const generation = ++generationRef.current
+    const isCurrent = () => generationRef.current === generation
+
     const err = supabaseConfigError()
     setConfigError(err)
     if (err || !supabase) {
+      if (!isCurrent()) return
       setUser(null)
       setLoading(false)
       return
@@ -30,9 +56,11 @@ export function AuthProvider({ children }) {
     try {
       const { data } = await supabase.auth.getSession()
       const session = data?.session
+      if (!isCurrent()) return
       if (!session) {
         setToken(null)
         setUser(null)
+        setLoading(false)
         return
       }
       // Mirror the token so <img src> / the WebSocket can authenticate.
@@ -43,6 +71,10 @@ export function AuthProvider({ children }) {
         .select('*')
         .eq('id', session.user.id)
         .maybeSingle()
+
+      // The user may have been replaced while the profile query was in
+      // flight; committing now would resurrect the previous account.
+      if (!isCurrent()) return
 
       setUser({
         id: session.user.id,
@@ -56,10 +88,11 @@ export function AuthProvider({ children }) {
         is_active: profile.data ? profile.data.is_active !== false : true,
       })
     } catch {
+      if (!isCurrent()) return
       setToken(null)
       setUser(null)
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [])
 
@@ -129,6 +162,9 @@ export function AuthProvider({ children }) {
   }, [refresh])
 
   const logout = useCallback(async () => {
+    // Invalidate any refresh already in flight BEFORE touching Supabase, so
+    // a late response for the outgoing account cannot repopulate `user`.
+    generationRef.current += 1
     if (supabase) {
       try {
         await supabase.auth.signOut()
@@ -138,11 +174,40 @@ export function AuthProvider({ children }) {
     }
     setToken(null)
     setUser(null)
+    setLoading(false)
+    // Bump a key every page keys its data fetches off, so no component can
+    // keep rendering the previous account's already-fetched rows.
+    try {
+      window.dispatchEvent(new Event('auth:logout'))
+    } catch {
+      /* older browsers */
+    }
   }, [])
+
+  /**
+   * Identity epoch - increments on sign-in, sign-out and any later change of
+   * account, so data fetches can be re-scoped instead of rendering rows that
+   * were fetched for a different user.
+   */
+  const [epoch, setEpoch] = useState(0)
+  const lastIdentityRef = useRef(null)
+
+  const bumpEpoch = useCallback(() => setEpoch((n) => n + 1), [])
+
+  // `user.id` is the identity. When it changes (or becomes null on logout)
+  // every consumer's cached rows belong to the previous account.
+  useEffect(() => {
+    const identity = user?.id ?? null
+    if (lastIdentityRef.current !== identity) {
+      lastIdentityRef.current = identity
+      setEpoch((n) => n + 1)
+    }
+  }, [user?.id])
 
   const value = useMemo(
     () => ({
       user,
+      epoch,
       loading,
       configError,
       login,
@@ -151,10 +216,14 @@ export function AuthProvider({ children }) {
       refresh,
       isAuthenticated: !!user,
     }),
-    [user, loading, configError, login, register, logout, refresh],
+    [user, epoch, loading, configError, login, register, logout, refresh],
   )
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  return (
+    <UserScopeContext.Provider value={epoch}>
+      <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+    </UserScopeContext.Provider>
+  )
 }
 
 export function useAuth() {

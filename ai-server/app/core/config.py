@@ -32,13 +32,13 @@ class Settings(BaseSettings):
     # expecting a signed token keeps functioning. User authentication
     # itself is now delegated to Supabase Auth (see SUPABASE_* below);
     # there is no local password database any more.
-    JWT_SECRET_KEY: str = "change-this-to-a-random-secret-key"
+    JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
 
-    # --- Supabase (server-side only - NEVER exposed to the frontend) ---
-    SUPABASE_URL: str = ""
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    # --- Supabase (server-side only) ---
+    SUPABASE_URL: str
+    SUPABASE_SERVICE_ROLE_KEY: str
     SUPABASE_STORAGE_BUCKET: str = "snapshots"
 
     # --- Cloud sync / offline behaviour ---
@@ -90,7 +90,10 @@ class Settings(BaseSettings):
         else:
             return False
         # A Supabase key is a JWT: three dot-separated base64url segments.
-        return key.count(".") == 2 and len(key) > 40
+        return (
+    (key.startswith("sb_secret_") and len(key) > 20)
+    or (key.count(".") == 2 and len(key) > 40)
+)
 
     @property
     def supabase_placeholder_reason(self) -> str:

@@ -32,8 +32,6 @@ on conflict (id) do update
         file_size_limit       = excluded.file_size_limit,
         allowed_mime_types    = excluded.allowed_mime_types;
 
-comment on storage.buckets is
-    'Snapshots bucket for Smart Agri Surveillance. Public read so the browser can render <img src> without a backend round-trip; uploads are service-role only.';
 
 -- Anyone may READ objects in this bucket (it is public anyway).
 drop policy if exists snapshots_read_public on storage.objects;

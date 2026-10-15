@@ -35,3 +35,9 @@ frontend/.vite/
 .DS_Store
 Thumbs.db
 
+# Supabase local temporary files
+supabase/.temp/
+
+# Local backup copy
+supabase_backup/
+

@@ -2,16 +2,21 @@ import React, { useEffect, useState } from 'react'
 import { Save, Loader2 } from 'lucide-react'
 import { api } from '../lib/api'
 import { useToast } from '../hooks/useToast.jsx'
+import { useUserScope } from '../lib/userScope'
 
 export default function SettingsPage() {
   const [form, setForm] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const toast = useToast()
+  // Settings are per-user now, so this page must reload them whenever the
+  // signed-in account changes - otherwise it would display (and a Save would
+  // overwrite) the previous account's configuration.
+  const epoch = useUserScope()
 
   useEffect(() => {
     api.get('/api/settings').then(setForm).catch(() => {}).finally(() => setLoading(false))
-  }, [])
+  }, [epoch])
 
   const set = (key, value) => setForm((f) => ({ ...f, [key]: value }))
 

@@ -99,6 +99,7 @@ def list_detections(
     search: Optional[str] = None,
 ):
     items, total = detections_repo.list_detections(
+        user_id=user["id"],
         source=source,
         category=category,
         severity=severity,
@@ -119,4 +120,4 @@ def list_detections(
 
 @router.get("/summary", response_model=DetectionSummary)
 def detections_summary(user: dict = Depends(require_authenticated_user)):
-    return DetectionSummary(**analytics_service.detection_summary())
+    return DetectionSummary(**analytics_service.detection_summary(user["id"]))

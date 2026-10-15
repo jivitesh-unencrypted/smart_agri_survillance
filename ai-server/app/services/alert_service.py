@@ -37,24 +37,31 @@ ALERT_TYPE_BY_CATEGORY = {
 
 
 def list_alerts(
+    user_id: str,
     resolved: Optional[bool] = None,
     severity: Optional[str] = None,
     camera_id: Optional[int] = None,
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
-    return alerts_repo.list_alerts(resolved=resolved, severity=severity, camera_id=camera_id, limit=limit)
+    return alerts_repo.list_alerts(user_id=user_id, resolved=resolved, severity=severity,
+                                  camera_id=camera_id, limit=limit)
 
 
-def get_alert(alert_id: int) -> Optional[Dict[str, Any]]:
-    return alerts_repo.get_alert(alert_id)
+def get_alert(alert_id: int, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    return alerts_repo.get_alert(alert_id, user_id=user_id)
 
 
-def update_alert(alert_id: int, acknowledged: Optional[bool] = None, resolved: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+def update_alert(alert_id: int, acknowledged: Optional[bool] = None, resolved: Optional[bool] = None,
+                 user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
-    Applies an acknowledge/resolve patch.
+    Applies an acknowledge/resolve patch, scoped to the owner.
 
     The `status` column is a STORED generated column in Postgres, so it
     stays consistent with these two booleans with no extra write.
+
+    Returns None when the alert does not exist OR is not owned by `user_id`;
+    the API turns that into a 404 so ownership is not distinguishable from
+    non-existence.
     """
     updates: Dict[str, Any] = {}
     if acknowledged is not None:
@@ -63,8 +70,8 @@ def update_alert(alert_id: int, acknowledged: Optional[bool] = None, resolved: O
         updates["resolved"] = resolved
         updates["resolved_at"] = utc_now_iso() if resolved else None
     if not updates:
-        return alerts_repo.get_alert(alert_id)
-    return alerts_repo.update_alert(alert_id, updates)
+        return alerts_repo.get_alert(alert_id, user_id=user_id)
+    return alerts_repo.update_alert(alert_id, updates, user_id=user_id)
 
 
 def alert_to_out_dict(row: Dict[str, Any]) -> Dict[str, Any]:

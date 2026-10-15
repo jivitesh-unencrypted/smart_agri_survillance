@@ -3,16 +3,21 @@ import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell,
 } from 'recharts'
 import { api } from '../lib/api'
+import { useUserScope } from '../lib/userScope'
 
 const CATEGORY_COLORS = { Human: '#f87171', Animals: '#fbbf24', Vehicles: '#60a5fa', Others: '#94a3b8' }
 
 export default function Analytics() {
   const [data, setData] = useState(null)
   const [range, setRange] = useState('weekly') // daily | weekly | monthly
+  // Re-fetch when the signed-in account changes. The query itself is already
+  // scoped to the caller by RLS, but without this the page could keep showing
+  // the previous account's aggregates until something else forced a remount.
+  const epoch = useUserScope()
 
   useEffect(() => {
     api.get('/api/analytics').then(setData).catch(() => {})
-  }, [])
+  }, [epoch])
 
   if (!data) return <p className="text-sm text-slate-500">Loading analytics…</p>
 

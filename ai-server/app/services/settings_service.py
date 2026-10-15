@@ -1,15 +1,15 @@
-"""Settings service - backed by the single-row Supabase `settings` table."""
+"""Settings service - backed by the PER-USER Supabase `settings` table."""
 from typing import Any, Dict
 
 from app.repositories import settings as settings_repo
 
 
-def get_settings() -> Dict[str, Any]:
-    return settings_repo.get_settings()
+def get_settings(user_id: str) -> Dict[str, Any]:
+    return settings_repo.get_settings(user_id)
 
 
-def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
-    return settings_repo.update_settings(updates)
+def update_settings(user_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
+    return settings_repo.update_settings(user_id, updates)
 
 
 def settings_to_out_dict(row: Dict[str, Any]) -> Dict[str, Any]:

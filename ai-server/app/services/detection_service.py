@@ -51,6 +51,7 @@ from app.core.config import settings, SEVERITY_MAP, EVENT_UPDATE_THROTTLE_SECOND
 from app import supabase_client as sc
 from app.repositories import alerts as alerts_repo
 from app.repositories import detections as detections_repo
+from app.repositories import settings as settings_repo
 
 logger = logging.getLogger("ai_server.detection")
 
@@ -102,27 +103,41 @@ def _iou(box_a, box_b) -> float:
 # ---------------------------------------------------------------------
 # Snapshot handling
 # ---------------------------------------------------------------------
-def save_snapshot(frame_bgr, camera_id: Optional[int], object_name: str) -> Optional[Dict[str, Any]]:
+def save_snapshot(frame_bgr, camera_id: Optional[int], object_name: str,
+                  user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     Writes the annotated frame to local disk and returns the info needed
     to reference it later. Never raises - a failed snapshot must not lose
     the detection event itself.
+
+    The local file path mirrors the Storage object key EXACTLY, relative to
+    `settings.storage_dir` - the same root the AI server's `/storage` route
+    serves from. Keeping the two layouts identical is what makes the offline
+    fallback in `SnapshotImage` work for owned snapshots: the cloud key
+    `<user_id>/<day>/<file>` is reachable locally as `/storage/<user_id>/...`
+    with no translation layer, and a legacy key still resolves to its old
+    location on disk.
 
     Returns {"storage_path", "absolute_path", "file_name"} or None.
     """
     try:
         now_local = datetime.now()
         day = now_local.strftime("%Y-%m-%d")
-        target_dir: Path = settings.snapshots_dir / day
-        target_dir.mkdir(parents=True, exist_ok=True)
 
         cam_label = camera_id if camera_id is not None else "video"
         filename = f"cam{cam_label}_{object_name}_{now_local.strftime('%H%M%S_%f')}.jpg"
-        target_path = target_dir / filename
 
-        cv2.imwrite(str(target_path), frame_bgr)
+        # `<user_id>/day/file` (private, owner-readable) or the legacy
+        # `day/file` when there is no owner.
+        storage_path = storage.snapshot_object_path(day, filename, user_id=user_id)
+        target_path = settings.storage_dir / storage_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not cv2.imwrite(str(target_path), frame_bgr):
+            raise RuntimeError(f"cv2.imwrite could not write {target_path}")
+
         return {
-            "storage_path": storage.snapshot_object_path(day, filename),
+            "storage_path": storage_path,
             "absolute_path": str(target_path),
             "file_name": filename,
         }
@@ -185,28 +200,31 @@ def _extend_detection(client_event_id: str, db_id: Optional[int], updates: Dict[
 def create_alert_for_detection(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Creates the alert for a newly-opened detection event, honouring the
-    user's alert toggles. Returns a broadcast-ready dict, or None when
+    owner's alert toggles. Returns a broadcast-ready dict, or None when
     alerts are disabled for that category. Mirrors the original
     `alert_service.create_alert_for_detection`.
     """
     from app.services.alert_service import ALERT_TYPE_BY_CATEGORY, TITLES_BY_CATEGORY
 
     category = event.get("category", "Others")
+    # The owner's own alert preferences, not a global row: User A disabling
+    # vehicle alerts must not silence User B's.
+    user_id = event.get("user_id")
     try:
-        app_settings = sc.call(lambda c: sc.one(c.table("settings").select("*").eq("id", 1).execute())) or {}
+        app_settings_row = settings_repo.get_settings_or_defaults(user_id)
     except sc.SupabaseUnavailable:
         # Offline: fall back to "alerts on" so important events are not
         # silently dropped from the queue.
-        app_settings = {"alerts_enabled": True, "alert_on_human": True,
-                        "alert_on_animal": True, "alert_on_vehicle": False}
+        app_settings_row = {"alerts_enabled": True, "alert_on_human": True,
+                            "alert_on_animal": True, "alert_on_vehicle": False}
 
-    if not app_settings.get("alerts_enabled", True):
+    if not app_settings_row.get("alerts_enabled", True):
         return None
-    if category == "Human" and not app_settings.get("alert_on_human", True):
+    if category == "Human" and not app_settings_row.get("alert_on_human", True):
         return None
-    if category == "Animals" and not app_settings.get("alert_on_animal", True):
+    if category == "Animals" and not app_settings_row.get("alert_on_animal", True):
         return None
-    if category == "Vehicles" and not app_settings.get("alert_on_vehicle", False):
+    if category == "Vehicles" and not app_settings_row.get("alert_on_vehicle", False):
         return None
 
     title = TITLES_BY_CATEGORY.get(category, "Object Detected")
@@ -222,6 +240,9 @@ def create_alert_for_detection(event: Dict[str, Any]) -> Optional[Dict[str, Any]
         "detection_id": event.get("id"),
         "camera_id": event.get("camera_id"),
         "camera_name": cam_name,
+        # An alert inherits the owner of the detection it came from. It is
+        # never taken from the caller.
+        "user_id": user_id,
         "category": category,
         "severity": event.get("severity", "normal"),
         "alert_type": ALERT_TYPE_BY_CATEGORY.get(category, "object_detected"),
@@ -279,11 +300,20 @@ class CameraEventTracker:
     """
 
     def __init__(self, camera_id: Optional[int], camera_name: str, location: str,
-                 video_analysis_job_id: Optional[int] = None):
+                 video_analysis_job_id: Optional[int] = None,
+                 user_id: Optional[str] = None):
         self.camera_id = camera_id
         self.camera_name = camera_name
         self.location = location
         self.video_analysis_job_id = video_analysis_job_id
+        # The owner of every detection and alert this tracker produces.
+        #
+        # It comes from the CAMERA ROW (or the video-analysis job row), never
+        # from a request body: the AI server writes with the service-role key,
+        # which bypasses RLS, so if ownership were taken from the client the
+        # only thing stopping one user writing detections into another's
+        # account would be the caller behaving.
+        self.user_id = user_id
         # Keyed by a synthetic per-instance id, e.g. "person#3" - NOT just
         # the object name, so multiple simultaneous instances of the same
         # class each get their own row.
@@ -351,13 +381,22 @@ class CameraEventTracker:
 
                         snapshot = None
                         if should_snapshot:
-                            snapshot = save_snapshot(annotated_frame_bgr, self.camera_id, name)
+                            # `user_id` is REQUIRED here, not optional: without it
+                            # the key loses its owner segment, and the row's
+                            # `snapshot_path` is then overwritten with that
+                            # non-namespaced key below - which the bucket's
+                            # per-user read policy rejects, so the snapshot
+                            # silently disappears from the Detections page.
+                            snapshot = save_snapshot(
+                                annotated_frame_bgr, self.camera_id, name, user_id=self.user_id
+                            )
                             if snapshot:
                                 event.last_snapshot_mono = now_mono
 
                         event_payload = _event_to_dict(
                             db_id=event.db_id,
                             client_event_id=event.client_event_id,
+                            user_id=self.user_id,
                             source=source,
                             camera_id=self.camera_id,
                             camera_name=self.camera_name,
@@ -400,7 +439,9 @@ class CameraEventTracker:
 
                         snapshot = None
                         if snapshot_on_event and annotated_frame_bgr is not None:
-                            snapshot = save_snapshot(annotated_frame_bgr, self.camera_id, name)
+                            snapshot = save_snapshot(
+                                annotated_frame_bgr, self.camera_id, name, user_id=self.user_id
+                            )
 
                         client_event_id = str(uuid.uuid4())
                         db_payload = {
@@ -409,6 +450,10 @@ class CameraEventTracker:
                             "camera_name": self.camera_name,
                             "location": self.location,
                             "video_analysis_job_id": self.video_analysis_job_id,
+                            # Ownership travels with the event from the frame it
+                            # opens, so the offline outbox, the replay and the
+                            # `detection_final` close all carry it too.
+                            "user_id": self.user_id,
                             "object_name": name,
                             "category": category,
                             "severity": SEVERITY_MAP.get(category, "normal"),
@@ -429,6 +474,7 @@ class CameraEventTracker:
                         event_payload = _event_to_dict(
                             db_id=db_id,
                             client_event_id=client_event_id,
+                            user_id=self.user_id,
                             source=source,
                             camera_id=self.camera_id,
                             camera_name=self.camera_name,
@@ -542,6 +588,7 @@ class CameraEventTracker:
 def _event_to_dict(
     db_id: Optional[int],
     client_event_id: str,
+    user_id: Optional[str],
     source: str,
     camera_id: Optional[int],
     camera_name: str,
@@ -564,10 +611,17 @@ def _event_to_dict(
     `id` is `null` while an event is still buffered in the offline outbox;
     the frontend only uses it as a list key, so nothing breaks, and the
     row appears with its real id as soon as connectivity returns.
+
+    `user_id` is part of the payload because `create_alert_for_detection()`
+    reads the owner straight off it. Omitting it made `event.get("user_id")`
+    return None for EVERY event, so every alert was written with
+    `user_id IS NULL` - invisible to its own owner under the
+    `auth.uid() = user_id` RLS policy, exactly like an unowned detection.
     """
     return {
         "id": db_id,
         "client_event_id": client_event_id,
+        "user_id": user_id,
         "source": source,
         "camera_id": camera_id,
         "camera_name": camera_name,

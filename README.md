@@ -35,6 +35,17 @@ duplicating rows.
 - [K. Security model](#k-security-model)
 - [L. Troubleshooting, verification, known limitations](#l-troubleshooting-verification-known-limitations)
 
+> **Per-user data isolation is active.**
+> Migration `supabase/migrations/0005_per_user_isolation.sql` IS applied to the
+> configured database: every camera, detection and alert is owned by a
+> `user_id`, RLS is enforced on each table, and the `snapshots` bucket is
+> private with owner-scoped read policies. (This note previously said the
+> migration had not been applied — that was stale and made it easy to
+> misread the storage-key bug documented in
+> **[docs/BUGFIX_VIDEO_DETECTIONS.md](docs/BUGFIX_VIDEO_DETECTIONS.md)**.) The
+> legacy-ownership decision and the two-user isolation test are in
+> **[docs/PER_USER_ISOLATION.md](docs/PER_USER_ISOLATION.md)**.
+
 ---
 
 ## A. What changed — v2 → v3
@@ -422,10 +433,22 @@ keep working. Caching the camera list locally would close this; see section L.
 **The service-role key never leaves the AI server.** The browser only ever
 gets the anon key, and every browser query runs through RLS.
 
-- **RLS is on for every table.** Signed-in users get full access to
-  `users`, `cameras`, `detections`, `alerts`, `settings`,
-  `video_analysis_jobs` and `camera_status_history` — this preserves v2's
-  "every account has equal access" model exactly.
+> The bullets below describe the model **after** migration `0005` is applied.
+> Right now the database still has the v3 model, where every account has
+> equal access to everything. See
+> [docs/PER_USER_ISOLATION.md](docs/PER_USER_ISOLATION.md).
+
+- **RLS is on for every table, and it is scoped to the owner.** Signed-in
+  users get full access to their *own* `cameras`, `detections`, `alerts`,
+  `settings`, `video_analysis_jobs` and `camera_status_history` — and
+  nothing belonging to anyone else. The check is always `auth.uid() =
+  user_id`; no policy is `using (true)`.
+- **The AI server bypasses RLS, so it scopes itself.** It runs on the
+  service-role key, which ignores RLS, so ownership is enforced in
+  application code: every route resolves the caller from their Supabase
+  session and filters on it, and a row that is not the caller's is reported
+  as `404` rather than `403` so a `403` cannot be used to probe which ids
+  exist.
 - **`users` is narrower on purpose**: you can select your own row and
   insert/update only yourself.
 - **`camera_secrets` has no policies at all.** With RLS enabled and zero
@@ -434,16 +457,36 @@ gets the anon key, and every browser query runs through RLS.
   camera passwords. Passwords are also stripped out of `stream_url` before
   the camera row is saved, and the API returns `has_password: true` instead
   of the value.
-- **Snapshots are public-read.** The bucket is public so an `<img src>` can
-  render without a backend round-trip, but writes are service-role only.
-- **Storage keys** are `snapshots/YYYY-MM-DD/cam<id>_<object>_<HHMMSS>.jpg`
-  in a bucket named `snapshots`; `detections.snapshot_path` stores that key,
-  and the frontend builds the public URL from it.
+- **Snapshots are private and per-user.** The bucket is not public, so every
+  read is a short-lived signed URL. Writes are service-role only.
+- **Storage keys** are `<user_id>/YYYY-MM-DD/cam<id>_<object>_<HHMMSS>.jpg`
+  in a bucket named `snapshots`; `detections.snapshot_path` stores that key.
+  The bucket name is not part of the key, and the read policy requires the
+  FIRST path segment to equal `auth.uid()`, so one account cannot sign a URL
+  for another's snapshot. (An earlier revision prefixed the key with
+  `snapshots/`, which made that first segment the literal string `snapshots`
+  and made every snapshot unreadable — do not reintroduce the prefix.)
+- **The analytics RPCs take an owner.** `get_detection_summary`,
+  `get_analytics` and `get_system_health` filter on
+  `coalesce(p_user_id, auth.uid()) = user_id`. A browser call passes nothing
+  and the RLS identity does the work; the AI server, which has no RLS
+  identity, must pass `p_user_id` — and if it forgets, the function returns
+  nothing rather than everything.
+- **`camera_code` is unique per user, not globally.** Two accounts can each
+  own a `CAM-001`; a single account still cannot have two.
+- **`settings` is one row per user**, keyed on `user_id`. There is no global
+  settings row any more, and each camera's detection thresholds come from its
+  own owner's settings.
+- **The live WebSocket is authenticated and owner-scoped.** The client
+  connects with `?token=<access_token>`; unauthenticated handshakes are
+  closed, and each account only receives its own events. Previously it
+  broadcast every event to every connected client.
 - **No frames are ever uploaded.** Only the small JPEG attached to a
   detection *event*; raw video never leaves the machine.
-- **`/api/cameras/{id}/stream`** is intentionally unauthenticated because a
-  browser `<img>` tag cannot send an Authorization header. Restrict it at
-  the firewall/router if the LAN isn't fully trusted.
+- **`/api/cameras/{id}/stream`** requires the caller's token to match the
+  camera's owner and serves `404` otherwise. A browser `<img>` tag cannot
+  send an Authorization header, so the URL carries the token as a query
+  parameter instead.
 
 ---
 

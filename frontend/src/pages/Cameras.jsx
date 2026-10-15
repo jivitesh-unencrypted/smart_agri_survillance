@@ -5,6 +5,7 @@ import { useToast } from '../hooks/useToast.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import CameraFormModal from '../components/CameraFormModal.jsx'
+import { useUserScope } from '../lib/userScope'
 
 export default function Cameras({ socket }) {
   const [cameras, setCameras] = useState([])
@@ -14,6 +15,10 @@ export default function Cameras({ socket }) {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [testingId, setTestingId] = useState(null)
   const toast = useToast()
+  // Cameras are owned per user, so the list is reloaded on an account change.
+  // `setCameras([])` first so the previous owner's cameras are not rendered
+  // while the new list is in flight.
+  const epoch = useUserScope()
 
   const load = async () => {
     try {
@@ -26,7 +31,10 @@ export default function Cameras({ socket }) {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    setCameras([])
+    load()
+  }, [epoch])
 
   useEffect(() => {
     return socket?.subscribe((evt) => {

@@ -12,9 +12,9 @@ from typing import Any, Dict
 from app.repositories import analytics as analytics_repo
 
 
-def get_analytics() -> Dict[str, Any]:
-    return analytics_repo.get_analytics()
+def get_analytics(user_id: str) -> Dict[str, Any]:
+    return analytics_repo.get_analytics(user_id)
 
 
-def detection_summary() -> Dict[str, Any]:
-    return analytics_repo.detection_summary()
+def detection_summary(user_id: str) -> Dict[str, Any]:
+    return analytics_repo.detection_summary(user_id)

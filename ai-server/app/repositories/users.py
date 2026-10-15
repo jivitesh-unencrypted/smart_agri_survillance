@@ -55,3 +55,28 @@ def list_profiles(limit: int = 200) -> List[Dict[str, Any]]:
         return sc.rows(client.table("users").select("*").order("username").limit(limit).execute())
 
     return sc.call(_run)
+
+
+def oldest_profile_id() -> Optional[str]:
+    """
+    The id of the earliest-created application profile.
+
+    Used for exactly one thing: giving ownership to rows that predate the
+    owner columns, which is the same deterministic rule
+    `supabase/migrations/0005_per_user_isolation.sql` applied to the rows
+    already in Postgres. It is NOT a substitute for an owner - nothing in
+    the normal detection path calls it, because every new camera, detection,
+    alert and job already carries the authenticated owner's uuid.
+    """
+    def _run(client):
+        rows = sc.rows(
+            client.table("users")
+            .select("id")
+            .order("created_at", desc=False)
+            .order("id", desc=False)
+            .limit(1)
+            .execute()
+        )
+        return rows[0]["id"] if rows else None
+
+    return sc.call(_run)

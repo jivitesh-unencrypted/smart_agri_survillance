@@ -14,14 +14,22 @@ class StreamManager:
         self._loop = loop
         self._workers: Dict[int, CameraStreamWorker] = {}
 
-    def start_camera(self, camera_id: int) -> bool:
+    
+    def start_camera(self, camera_id: int, user_id: str) -> bool:
         worker = self._workers.get(camera_id)
+
         if worker is not None and worker.is_running():
             return True
-        worker = CameraStreamWorker(camera_id, self._loop)
+
+        worker = CameraStreamWorker(
+            camera_id,
+            self._loop,
+            owner_id=user_id,
+        )
         self._workers[camera_id] = worker
         worker.start()
         return True
+
 
     def stop_camera(self, camera_id: int) -> bool:
         worker = self._workers.get(camera_id)

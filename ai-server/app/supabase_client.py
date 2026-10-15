@@ -144,7 +144,10 @@ def ping() -> bool:
     if client is None:
         return False
     try:
-        client.table("settings").select("id").limit(1).execute()
+        # `user_id`, not `id`: settings became one row per user keyed on
+        # user_id, and the old `id` column no longer exists. This is only a
+        # connectivity probe, so any existing column works.
+        client.table("settings").select("user_id").limit(1).execute()
         _mark_ok()
         return True
     except Exception as exc:  # noqa: BLE001

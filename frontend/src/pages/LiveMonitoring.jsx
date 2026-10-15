@@ -3,6 +3,7 @@ import { Play, Square, Camera as CameraIcon, Maximize2, Minimize2, Gauge } from 
 import { api, streamUrl } from '../lib/api'
 import { useToast } from '../hooks/useToast.jsx'
 import { categoryColor, severityColor } from '../lib/utils'
+import { useUserScope } from '../lib/userScope'
 
 export default function LiveMonitoring({ socket }) {
   const [cameras, setCameras] = useState([])
@@ -11,6 +12,10 @@ export default function LiveMonitoring({ socket }) {
   const [fullscreen, setFullscreen] = useState(false)
   const [loadingAction, setLoadingAction] = useState(false)
   const toast = useToast()
+  // Camera list and the selected camera are per-user. On an account change the
+  // previous account's camera must not stay selected or streaming, so both are
+  // cleared before this account's cameras are loaded.
+  const epoch = useUserScope()
 
   const loadCameras = async () => {
     try {
@@ -24,7 +29,11 @@ export default function LiveMonitoring({ socket }) {
     }
   }
 
-  useEffect(() => { loadCameras() }, [])
+  useEffect(() => {
+    setCameras([])
+    setSelectedId(null)
+    loadCameras()
+  }, [epoch])
 
   const selectedCamera = cameras.find((c) => c.id === selectedId)
 
@@ -53,7 +62,7 @@ export default function LiveMonitoring({ socket }) {
         setRunning(evt.status === 'online')
       }
     })
-  }, [socket.subscribe, selectedId])
+  }, [socket.subscribe, selectedId, epoch])
 
   const totalObjects = useMemo(() => Object.values(counts).reduce((a, b) => a + b, 0), [counts])
 

@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { formatDateTime, formatDuration, categoryColor, severityColor } from '../lib/utils'
 import KpiCard from '../components/KpiCard.jsx'
 import SnapshotImage from '../components/SnapshotImage.jsx'
+import { useUserScope } from '../lib/userScope'
 
 const CATEGORIES = ['Human', 'Animals', 'Vehicles', 'Others']
 const SEVERITIES = ['critical', 'warning', 'info', 'normal']
@@ -16,8 +17,12 @@ export default function Detections() {
   const [page, setPage] = useState(1)
   const [pageSize] = useState(20)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [cameras, setCameras] = useState([])
   const [preview, setPreview] = useState(null)
+  // Detections belong to the signed-in user, so both the page and the camera
+  // filter list are reloaded on an account change.
+  const epoch = useUserScope()
 
   const [filters, setFilters] = useState({
     source: searchParams.get('source') || '', category: '', severity: '', camera_id: '', search: '',
@@ -25,19 +30,31 @@ export default function Detections() {
 
   const load = useCallback(async () => {
     setLoading(true)
+    // A failed request must not look like "no records": the empty state below
+    // is only ever shown for a request that actually succeeded and returned
+    // nothing. Without this the previous values silently stayed on screen and
+    // an unreachable backend read as "0 detections".
+    setError(null)
     try {
       const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
       Object.entries(filters).forEach(([k, v]) => { if (v) params.set(k, v) })
       const res = await api.get(`/api/detections?${params.toString()}`)
-      setItems(res.items)
-      setTotal(res.total)
+      setItems(res.items || [])
+      setTotal(res.total || 0)
+    } catch (err) {
+      setItems([])
+      setTotal(0)
+      setError(err?.detail || err?.message || 'Could not load detection records.')
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize, filters])
+  }, [page, pageSize, filters, epoch])
 
-  useEffect(() => { load() }, [load])
-  useEffect(() => { api.get('/api/cameras').then(setCameras).catch(() => {}) }, [])
+  useEffect(() => { setItems([]); load() }, [load])
+  useEffect(() => {
+    setCameras([])
+    api.get('/api/cameras').then(setCameras).catch(() => {})
+  }, [epoch])
 
   const setFilter = (key, value) => { setPage(1); setFilters((f) => ({ ...f, [key]: value })) }
 
@@ -111,6 +128,12 @@ export default function Detections() {
 
         {loading ? (
           <p className="text-sm text-slate-500 py-4">Loading…</p>
+        ) : error ? (
+          <div className="py-4">
+            <p className="text-sm text-red-400">Could not load detection records.</p>
+            <p className="text-xs text-slate-500 mt-1">{error}</p>
+            <button className="btn btn-secondary text-xs mt-3" onClick={load}>Retry</button>
+          </div>
         ) : items.length === 0 ? (
           <p className="text-sm text-slate-500 py-4">No detection records found for the selected filters.</p>
         ) : (

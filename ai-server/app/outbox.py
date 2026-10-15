@@ -20,6 +20,21 @@ Each queued row carries a client-generated UUID (`client_event_id` /
 `client_alert_id`) with a UNIQUE constraint in Postgres. Replay is
 therefore idempotent: a row that already made it to the cloud (e.g. the
 response was lost mid-flight) is reused instead of duplicated.
+
+Ownership
+---------
+Every queued row records the owning user, both inside the JSON payload
+(which is what actually gets written to Postgres) and in its own `user_id`
+column, which exists so ownership can be inspected and reported without
+having to parse every payload.
+
+Offline is precisely when this matters most: a camera keeps running with no
+internet for hours, and every event it produces is buffered here. The owner
+is captured when the event is queued - from the camera row, long before any
+network call - so it cannot be lost, guessed, or reassigned by whoever
+happens to be signed in when the queue finally drains. Rows that predate the
+owner column are given the same deterministic legacy owner the SQL migration
+used (the earliest-created profile) and are logged loudly when that happens.
 """
 import json
 import logging
@@ -34,6 +49,7 @@ from app.core.config import settings
 from app import supabase_client as sc
 from app.repositories import alerts as alerts_repo
 from app.repositories import detections as detections_repo
+from app.repositories import users as users_repo
 
 logger = logging.getLogger("ai_server.outbox")
 
@@ -60,6 +76,12 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE INDEX IF NOT EXISTS ix_outbox_created ON outbox (created_at);
 """
 
+# Added after the queue was already in use, so `CREATE TABLE IF NOT EXISTS`
+# above will not add it to an existing outbox.db. SQLite has no
+# "ADD COLUMN IF NOT EXISTS", so the column list is probed instead.
+_legacy_owner_cache: Optional[str] = None
+_legacy_owner_looked_up = False
+
 
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(settings.outbox_db_path), timeout=10, check_same_thread=False)
@@ -71,6 +93,12 @@ def _connect() -> sqlite3.Connection:
 def init() -> None:
     with _lock, _connect() as conn:
         conn.executescript(_SCHEMA)
+        # Add the owner column to a pre-existing queue. Rows already in it keep
+        # a NULL owner and are resolved at flush time (see `_ensure_owner`).
+        if not any(r["name"] == "user_id" for r in conn.execute("PRAGMA table_info(outbox)")):
+            conn.execute("ALTER TABLE outbox ADD COLUMN user_id TEXT")
+            logger.info("Added user_id column to the existing offline outbox")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_outbox_user ON outbox (user_id)")
     logger.info("Offline outbox ready at %s", settings.outbox_db_path)
 
 
@@ -118,9 +146,14 @@ def _insert(kind: str, payload: Dict[str, Any], snapshot_file: Optional[str]) ->
     try:
         with _lock, _connect() as conn:
             conn.execute(
-                "INSERT INTO outbox (kind, payload, snapshot_file, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO outbox (kind, payload, snapshot_file, created_at, user_id) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (kind, json.dumps(payload, default=str), snapshot_file,
-                 datetime.now(timezone.utc).isoformat()),
+                 datetime.now(timezone.utc).isoformat(),
+                 # Mirrored out of the payload so ownership is inspectable
+                 # without parsing JSON. The payload remains the source of
+                 # truth for what actually gets synced.
+                 payload.get("user_id")),
             )
     except Exception as exc:  # noqa: BLE001 - never let queueing break detection
         logger.error("Could not queue %s event for later sync: %s", kind, exc)
@@ -132,6 +165,45 @@ def pending_count() -> int:
             return int(conn.execute("SELECT COUNT(*) AS c FROM outbox").fetchone()["c"])
     except Exception:
         return 0
+
+
+def pending_by_owner() -> Dict[str, int]:
+    """Queued rows per owner, for diagnostics and the sync status endpoint."""
+    try:
+        with _lock, _connect() as conn:
+            return {
+                (r["user_id"] or "unowned"): int(r["c"])
+                for r in conn.execute(
+                    "SELECT user_id, COUNT(*) AS c FROM outbox GROUP BY user_id"
+                )
+            }
+    except Exception:
+        return {}
+
+
+def _legacy_owner() -> Optional[str]:
+    """
+    Resolves the fallback owner for rows queued before owner tracking existed.
+
+    Uses the same rule as `0005_per_user_isolation.sql`: the earliest-created
+    application profile. Resolved once and cached, because it only applies to
+    pre-upgrade rows and the sync loop would otherwise retry it per row while
+    the network is flaky.
+    """
+    global _legacy_owner_cache, _legacy_owner_looked_up
+    if not _legacy_owner_looked_up:
+        _legacy_owner_looked_up = True
+        try:
+            _legacy_owner_cache = users_repo.oldest_profile_id()
+        except sc.SupabaseUnavailable:
+            _legacy_owner_cache = None
+        if _legacy_owner_cache:
+            logger.warning(
+                "Queued outbox rows predate owner tracking; assigning them to the "
+                "earliest profile %s (see migration 0005)",
+                _legacy_owner_cache[:8],
+            )
+    return _legacy_owner_cache
 
 
 # ---------------------------------------------------------------------
@@ -177,6 +249,11 @@ def flush(limit: int = 100) -> Dict[str, int]:
     for row in batch:
         try:
             payload = json.loads(row["payload"])
+            # A queued row always carries its owner in the payload. Rows that
+            # were queued before owner tracking existed have none, and Postgres
+            # now rejects an unowned detection, so they are stamped with the
+            # legacy owner here - once, loudly, and before the write.
+            _ensure_owner(row, payload)
             if row["kind"] == KIND_DETECTION:
                 _flush_detection(payload, row["snapshot_file"])
             elif row["kind"] == KIND_DETECTION_FINAL:
@@ -206,6 +283,34 @@ def flush(limit: int = 100) -> Dict[str, int]:
     return stats
 
 
+def _ensure_owner(row: sqlite3.Row, payload: Dict[str, Any]) -> None:
+    """
+    Guarantees the payload carries a `user_id` before it is synced.
+
+    A detection's owner is captured from its camera at detection time, so the
+    normal path already has one. This only touches rows queued by an older
+    build. If no owner can be resolved the row is left alone and the sync will
+    fail loudly on the NOT NULL constraint, which is the correct outcome:
+    silently dropping a queued detection, or inventing an owner, would both be
+    worse than a visible error.
+    """
+    if payload.get("user_id"):
+        if payload["user_id"] != row["user_id"]:
+            _set_row_owner(row["id"], payload["user_id"])
+        return
+
+    legacy = _legacy_owner()
+    if not legacy:
+        return
+    payload["user_id"] = legacy
+    _set_row_owner(row["id"], legacy)
+
+
+def _set_row_owner(row_id: int, user_id: str) -> None:
+    with _lock, _connect() as conn:
+        conn.execute("UPDATE outbox SET user_id = ? WHERE id = ?", (user_id, row_id))
+
+
 def _flush_detection(payload: Dict[str, Any], snapshot_file: Optional[str]) -> None:
     # Upload the snapshot FIRST so the detection row never points at a
     # Storage object that does not exist yet.
@@ -221,7 +326,12 @@ def _flush_alert(payload: Dict[str, Any]) -> None:
     # This is what lets an alert survive being created while offline.
     client_event_id = payload.pop("pending_detection_client_event_id", None)
     if payload.get("detection_id") is None and client_event_id:
-        row = detections_repo.get_detection_by_client_event_id(client_event_id)
+        # Scoped to the payload's own owner: `client_event_id` is unique per
+        # user, not globally, so an unscoped lookup could bind this alert to
+        # another account's detection.
+        row = detections_repo.get_detection_by_client_event_id(
+            client_event_id, user_id=payload.get("user_id")
+        )
         if row:
             payload["detection_id"] = row.get("id")
     alerts_repo.insert_alert(payload)
@@ -285,6 +395,9 @@ class SyncWorker(threading.Thread):
         return {
             "enabled": settings.sync_enabled,
             "pending": pending_count(),
+            # Keyed by owner so it is obvious whether a stuck queue belongs to
+            # one user or is holding rows that predate owner tracking.
+            "pending_by_owner": pending_by_owner(),
             "interval_seconds": self._interval,
             "last_flush_seconds_ago": (
                 round(time.monotonic() - self.last_flush_mono, 1) if self.last_flush_mono else None

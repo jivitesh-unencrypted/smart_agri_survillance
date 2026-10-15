@@ -3,12 +3,16 @@ import { CheckCircle2, Circle, AlertTriangle } from 'lucide-react'
 import { api } from '../lib/api'
 import { formatDateTime, severityColor } from '../lib/utils'
 import { useToast } from '../hooks/useToast.jsx'
+import { useUserScope } from '../lib/userScope'
 
 export default function Alerts({ socket }) {
   const [alerts, setAlerts] = useState([])
   const [tab, setTab] = useState('active') // active | all
   const [loading, setLoading] = useState(true)
   const toast = useToast()
+  // Alerts belong to the signed-in user; reload on an account change so the
+  // previous account's alerts (and their Acknowledge buttons) disappear.
+  const epoch = useUserScope()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -21,7 +25,7 @@ export default function Alerts({ socket }) {
     }
   }, [tab])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { setAlerts([]); load() }, [load])
 
   useEffect(() => {
     return socket?.subscribe((evt) => {

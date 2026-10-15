@@ -1,4 +1,4 @@
-"""Settings routes - single-row app settings in Supabase."""
+"""Settings routes - PER-USER settings in Supabase (one row per user)."""
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -31,11 +31,15 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 @router.get("")
 def get_settings(user: dict = Depends(require_authenticated_user)):
-    return settings_service.settings_to_out_dict(settings_service.get_settings())
+    # Scoped by the verified token's id, so a caller can only ever read and
+    # write their own configuration.
+    return settings_service.settings_to_out_dict(
+        settings_service.get_settings(user["id"])
+    )
 
 
 @router.put("")
 def update_settings(payload: SettingsUpdate, user: dict = Depends(require_authenticated_user)):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-    row = settings_service.update_settings(updates)
+    row = settings_service.update_settings(user["id"], updates)
     return settings_service.settings_to_out_dict(row)

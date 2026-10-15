@@ -46,14 +46,18 @@ def list_alerts(
     camera_id: Optional[int] = None,
     limit: int = Query(100, ge=1, le=500),
 ):
-    rows = alert_service.list_alerts(resolved=resolved, severity=severity, camera_id=camera_id, limit=limit)
+    rows = alert_service.list_alerts(user_id=user["id"], resolved=resolved, severity=severity,
+                                    camera_id=camera_id, limit=limit)
     items = [AlertOut(**alert_service.alert_to_out_dict(r)) for r in rows]
     return AlertListResponse(items=items, total=len(items))
 
 
 @router.patch("/{alert_id}", response_model=AlertOut)
 def update_alert(alert_id: int, payload: AlertUpdate, user: dict = Depends(require_authenticated_user)):
-    row = alert_service.update_alert(alert_id, acknowledged=payload.acknowledged, resolved=payload.resolved)
+    # Scoped by owner: another user's alert is reported as 404, not 403, so
+    # the API does not confirm that an id exists.
+    row = alert_service.update_alert(alert_id, acknowledged=payload.acknowledged,
+                                    resolved=payload.resolved, user_id=user["id"])
     if row is None:
         raise HTTPException(status_code=404, detail="Alert not found")
     return AlertOut(**alert_service.alert_to_out_dict(row))

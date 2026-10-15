@@ -4,6 +4,7 @@ import { UploadCloud, FileVideo, Loader2, CheckCircle2, XCircle, Ban, ArrowRight
 import { api } from '../lib/api'
 import { formatDateTime } from '../lib/utils'
 import { useToast } from '../hooks/useToast.jsx'
+import { useUserScope } from '../lib/userScope'
 
 const POLL_INTERVAL_MS = 1500
 
@@ -15,6 +16,10 @@ export default function VideoAnalysis() {
   const pollRef = useRef(null)
   const toast = useToast()
   const navigate = useNavigate()
+  // Jobs are owned by the uploader, so the list must be reloaded whenever the
+  // signed-in account changes - otherwise this page would list the previous
+  // account's uploads (and let the owner try to cancel them).
+  const epoch = useUserScope()
 
   const loadJobs = useCallback(async () => {
     try {
@@ -26,6 +31,8 @@ export default function VideoAnalysis() {
   }, [])
 
   useEffect(() => {
+    // Drop the previous account's jobs immediately, then load this account's.
+    setJobs([])
     loadJobs()
     pollRef.current = setInterval(() => {
       // Only poll while something is actually in flight, to avoid
@@ -37,7 +44,7 @@ export default function VideoAnalysis() {
       })
     }, POLL_INTERVAL_MS)
     return () => clearInterval(pollRef.current)
-  }, [loadJobs])
+  }, [loadJobs, epoch])
 
   const handleFile = async (file) => {
     if (!file) return

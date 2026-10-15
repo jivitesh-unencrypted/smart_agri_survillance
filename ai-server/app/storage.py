@@ -20,15 +20,35 @@ from app.core.config import settings
 logger = logging.getLogger("ai_server.storage")
 
 
-def snapshot_object_path(day: str, filename: str) -> str:
+def snapshot_object_path(day: str, filename: str, user_id: Optional[str] = None) -> str:
     """
-    Object key inside the `snapshots` bucket.
+    Object key inside the `snapshots` bucket, namespaced by owner:
 
-    Deliberately mirrors the original on-disk layout
-    (`snapshots/YYYY-MM-DD/<file>.jpg`) so any code or migration that
-    understands the old relative path keeps working.
+        <user_id>/YYYY-MM-DD/<file>.jpg
+
+    The owner folder is not decoration. The bucket is private and its read
+    policy is `(storage.foldername(name))[1] = auth.uid()::text`. Two facts
+    together pin down the layout:
+
+      * `name` in `storage.objects` is the key RELATIVE TO THE BUCKET ROOT -
+        the bucket's own name is not part of it, so it must not be repeated
+        here. Prefixing it produced `snapshots/<user_id>/...` inside a bucket
+        already called `snapshots`.
+      * `storage.foldername()` drops the final segment, so `[1]` is the FIRST
+        directory in the key. That segment must be the user id.
+
+    Which is why the key starts with the owner and not with `snapshots/`; the
+    earlier double prefix made `foldername(name)[1]` the literal `'snapshots'`
+    and the policy matched nothing for anybody.
+
+    When `user_id` is missing (a job with no resolvable owner, which should not
+    happen - the analysis run now aborts instead) the key falls back to the old
+    un-namespaced layout; such an object is then not readable by any user
+    through RLS, which is the safe failure direction.
     """
-    return f"snapshots/{day}/{filename}"
+    if not user_id:
+        return f"{day}/{filename}"
+    return f"{user_id}/{day}/{filename}"
 
 
 def upload_snapshot_object(local_path: Path, object_path: str) -> Optional[str]:

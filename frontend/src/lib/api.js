@@ -152,6 +152,20 @@ async function unwrap(promise) {
   return data
 }
 
+/**
+ * The signed-in Supabase Auth user id, or null when there is no session.
+ *
+ * Used for the endpoints that are now keyed on `user_id` rather than a
+ * sentinel row (settings). Note this is used only to *address* the caller's
+ * own row - it is never a source of authorisation. Supabase Auth owns the
+ * identity and RLS compares against `auth.uid()` server-side, so a caller
+ * passing someone else's uuid here would simply get an empty result.
+ */
+async function currentUserId() {
+  const { data } = await requireSupabase().auth.getSession()
+  return data?.session?.user?.id ?? null
+}
+
 const num = (v, fallback = 0) => (v === null || v === undefined ? fallback : Number(v))
 
 // ---------------------------------------------------------------------
@@ -295,8 +309,15 @@ const db = {
   },
 
   async '/api/settings'() {
-    const row = await unwrap(requireSupabase().from('settings').select('*').eq('id', 1).maybeSingle())
-    return settingsToOut(row || { id: 1 })
+    // There is no longer a shared `id = 1` settings row: settings became one
+    // row per user keyed on `user_id`. The row is fetched by the signed-in
+    // user's id and, additionally, RLS refuses to return any other user's
+    // row - so this is scoped by the database, not by the caller being polite.
+    const userId = await currentUserId()
+    const row = userId
+      ? await unwrap(requireSupabase().from('settings').select('*').eq('user_id', userId).maybeSingle())
+      : null
+    return settingsToOut(row || {})
   },
 
   async '/api/alerts'(query) {
@@ -323,13 +344,24 @@ const db = {
     if (query.date_to) q = q.lte('created_at', query.date_to)
     if (query.search) q = q.ilike('object_name', `%${String(query.search).toLowerCase()}%`)
 
-    const rows = await unwrap(
-      q.order('created_at', { ascending: false })
-        .range((page - 1) * pageSize, page * pageSize - 1),
-    )
+    // `count: 'exact'` asks PostgREST for the total number of matching rows
+    // across ALL pages, which is what the UI's "Total Events" figure and the
+    // pagination need. `unwrap()` throws that away (it returns `data` only),
+    // and reading `rows.length` instead reported the PAGE size - so a filter
+    // matching 137 events showed "total 20". The response is destructured here
+    // so the real count survives, and a failing request throws rather than
+    // resolving to an empty page that the page would render as "0 records".
+    const { data, error, count } = await q
+      .order('created_at', { ascending: false })
+      .range((page - 1) * pageSize, page * pageSize - 1)
+
+    if (error) {
+      throw new ApiError(toDetail(error) || 'Supabase request failed', 0, toDetail(error))
+    }
+
     return {
-      items: (rows || []).map(detectionToOut),
-      total: rows?.length ?? 0,
+      items: (data || []).map(detectionToOut),
+      total: typeof count === 'number' ? count : (data?.length ?? 0),
       page,
       page_size: pageSize,
     }
@@ -411,10 +443,19 @@ async function put(path, body) {
   // Settings live in Supabase and carry no secrets.
   const { path: p } = splitPath(path)
   if (p === '/api/settings') {
+    // Upsert against `user_id`, the authenticated user's own id. There is no
+    // global settings row to update any more, and the owner is taken from the
+    // session rather than from the request body - a client cannot write its
+    // settings into another account by sending a different uuid. RLS would
+    // reject such a row anyway.
+    const userId = await currentUserId()
+    if (!userId) throw new ApiError('Not authenticated', 401, 'Not authenticated')
     const row = await unwrap(
       requireSupabase().from('settings')
-        .update({ ...body, id: 1, updated_at: new Date().toISOString() })
-        .eq('id', 1)
+        .upsert(
+          { ...body, user_id: userId, updated_at: new Date().toISOString() },
+          { onConflict: 'user_id' },
+        )
         .select()
         .single(),
     )
@@ -460,15 +501,40 @@ function encodeKey(key) {
 }
 
 /**
- * Preferred snapshot URL: Supabase Storage.
+ * Signed snapshot URL from Supabase Storage.
  *
- * The `snapshots` bucket is public-read and snapshots are pushed there by
- * the AI server, so a `<img src>` works without any backend round-trip.
+ * The `snapshots` bucket is PRIVATE. It used to be `public = true` with a
+ * `to public` read policy, which meant every detection snapshot was readable
+ * by anyone who had or guessed the object key - including another user's.
+ * Snapshots are user-owned data, so the bucket is now private and objects live
+ * under `<user_id>/...`, with a Storage policy that requires
+ * `(storage.foldername(name))[1] = auth.uid()::text`.
+ *
+ * `name` is the key inside the bucket, not the bucket's own name, so the FIRST
+ * path segment must be the user id. Writing the key as
+ * `snapshots/<user_id>/...` inside a bucket already called `snapshots` made
+ * that first segment the literal string `snapshots`: the policy then matched
+ * no object for anybody and no snapshot could be signed at all.
+ *
+ * A private object therefore cannot be addressed by a plain URL, so this
+ * mints a short-lived signed URL with the user's own session. RLS still
+ * applies to that call, so a user cannot sign a snapshot belonging to someone
+ * else - asking for another user's path simply fails.
+ *
+ * Returns null when the path is missing or the signature cannot be created,
+ * which callers treat as "try the local fallback".
  */
-export function mediaUrl(relativeStoragePath) {
-  if (!relativeStoragePath) return null
-  if (!SUPABASE_URL) return localMediaUrl(relativeStoragePath)
-  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_STORAGE_BUCKET}/${encodeKey(relativeStoragePath)}`
+export async function mediaUrl(relativeStoragePath, expiresInSeconds = 3600) {
+  if (!relativeStoragePath || !SUPABASE_URL) return null
+  try {
+    const { data, error } = await supabase.storage
+      .from(SUPABASE_STORAGE_BUCKET)
+      .createSignedUrl(relativeStoragePath, expiresInSeconds)
+    if (error || !data?.signedUrl) return null
+    return data.signedUrl
+  } catch {
+    return null
+  }
 }
 
 /**

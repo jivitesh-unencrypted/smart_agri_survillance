@@ -24,16 +24,16 @@ from app.repositories import cameras as cameras_repo
 logger = logging.getLogger("ai_server.cameras")
 
 
-def list_cameras(enabled_only: bool = False) -> List[Dict[str, Any]]:
-    return cameras_repo.list_cameras(enabled_only=enabled_only)
+def list_cameras(user_id: str, enabled_only: bool = False) -> List[Dict[str, Any]]:
+    return cameras_repo.list_cameras(user_id=user_id, enabled_only=enabled_only)
 
 
-def get_camera(camera_id: int) -> Optional[Dict[str, Any]]:
-    return cameras_repo.get_camera(camera_id)
+def get_camera(camera_id: int, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    return cameras_repo.get_camera(camera_id, user_id=user_id)
 
 
-def delete_camera(camera_id: int) -> bool:
-    return cameras_repo.delete_camera(camera_id)
+def delete_camera(camera_id: int, user_id: Optional[str] = None) -> bool:
+    return cameras_repo.delete_camera(camera_id, user_id=user_id)
 
 
 def _resolve_password_field(data: Dict[str, Any], existing: Optional[str]) -> Optional[str]:
@@ -56,12 +56,12 @@ def _resolve_password_field(data: Dict[str, Any], existing: Optional[str]) -> Op
     return None
 
 
-def create_camera(data: Dict[str, Any]) -> Dict[str, Any]:
+def create_camera(data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     connection_type = data.get("connection_type", CONNECTION_TYPE_LOCAL)
     password_field = _resolve_password_field(data, None)
 
     payload = {
-        "camera_code": cameras_repo.generate_camera_code(),
+        "camera_code": cameras_repo.generate_camera_code(user_id),
         "name": (data.get("name") or "").strip(),
         "location": (data.get("location") or "").strip(),
         "description": (data.get("description") or "").strip(),
@@ -75,14 +75,20 @@ def create_camera(data: Dict[str, Any]) -> Dict[str, Any]:
         "status": "unknown",
     }
 
-    camera = cameras_repo.create_camera(payload)
+    camera = cameras_repo.create_camera(payload, user_id=user_id)
     if password_field:
         cameras_repo.set_camera_secret(camera["id"], password_field)
     return camera
 
 
-def update_camera(camera_id: int, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    camera = cameras_repo.get_camera(camera_id)
+def update_camera(camera_id: int, data: Dict[str, Any],
+                  user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    Updates a camera. Returns None when the camera does not exist OR is not
+    owned by `user_id` - the API maps that to 404 so ownership is not
+    distinguishable from non-existence.
+    """
+    camera = cameras_repo.get_camera(camera_id, user_id=user_id)
     if camera is None:
         return None
 
@@ -103,7 +109,7 @@ def update_camera(camera_id: int, data: Dict[str, Any]) -> Optional[Dict[str, An
         "enabled": data.get("enabled", camera.get("enabled", True)),
     }
 
-    updated = cameras_repo.update_camera(camera_id, updates)
+    updated = cameras_repo.update_camera(camera_id, updates, user_id=user_id)
     cameras_repo.set_camera_secret(camera_id, password_field)
     return updated
 
@@ -199,9 +205,11 @@ def camera_to_out_dict(camera: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def set_runtime_status(camera_id: int, status: str, fps: Optional[float] = None,
-                       latency_ms: Optional[float] = None, message: Optional[str] = None) -> None:
+                       latency_ms: Optional[float] = None, message: Optional[str] = None,
+                       user_id: Optional[str] = None) -> None:
     """Best-effort health write; never allowed to break the camera loop."""
     try:
-        cameras_repo.set_runtime_status(camera_id, status, fps=fps, latency_ms=latency_ms, message=message)
+        cameras_repo.set_runtime_status(camera_id, status, fps=fps, latency_ms=latency_ms,
+                                         message=message, user_id=user_id)
     except sc.SupabaseUnavailable as exc:
         logger.debug("Camera %s status not synced (%s)", camera_id, exc)

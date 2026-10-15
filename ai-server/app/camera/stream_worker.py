@@ -72,9 +72,16 @@ def _downscale(frame: np.ndarray, max_width: Optional[int]) -> np.ndarray:
 
 
 class CameraStreamWorker:
-    def __init__(self, camera_id: int, loop: asyncio.AbstractEventLoop):
+    
+    def __init__(
+        self,
+        camera_id: int,
+        loop: asyncio.AbstractEventLoop,
+        owner_id: str,
+    ):
         self.camera_id = camera_id
         self._loop = loop
+        self.owner_id = owner_id
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
@@ -85,6 +92,7 @@ class CameraStreamWorker:
         self._last_frame_mono: Optional[float] = None
 
         self._tracker: Optional[CameraEventTracker] = None
+
 
     # ---------------------------------------------------------- lifecycle
     def start(self):
@@ -100,8 +108,10 @@ class CameraStreamWorker:
             self._thread.join(timeout=5)
         if self._tracker:
             self._tracker.close_all()
-        camera_service.set_runtime_status(self.camera_id, "offline", message="Stopped")
+        camera_service.set_runtime_status(self.camera_id, "offline", message="Stopped",
+                                          user_id=self.owner_id)
         broadcast_sync(self._loop, {
+            "user_id": self.owner_id,
             "type": "camera_status",
             "camera_id": self.camera_id,
             "status": "offline",
@@ -117,28 +127,51 @@ class CameraStreamWorker:
 
     # ---------------------------------------------------------- config
     def _load_camera(self):
-        """Reads the camera row once at (re)start."""
-        camera = cameras_repo.get_camera(self.camera_id)
+        """
+        Reads the camera row once at (re)start.
+
+        The camera's `user_id` is cached here and is the source of truth for
+        every row this worker writes: the settings it runs on, the ownership
+        of each detection and alert, and the camera status history. Deriving
+        it from the camera row (not from whoever is signed in to the browser)
+        is what makes an offline camera's queued events replay into the right
+        user's data.
+        """
+        camera = cameras_repo.get_camera(
+            self.camera_id,
+         user_id=self.owner_id,
+)
         if camera is None:
             return None
+        # self.owner_id = camera.get("user_id")
+        if not self.owner_id:
+            logger.warning(
+                "Camera %s has no owner (user_id); its events will queue unowned",
+                self.camera_id,
+            )
         source = camera_service.build_source(camera)
         self._tracker = CameraEventTracker(
-            camera["id"], camera.get("name") or "", camera.get("location") or ""
+            camera["id"], camera.get("name") or "", camera.get("location") or "",
+            user_id=self.owner_id,
         )
         return source
 
     def _read_settings(self) -> dict:
         """
-        Settings are cached for a few seconds per camera. Re-reading them
-        from Supabase on every single frame would be one network call per
-        frame; this keeps thresholds live while collapsing that to one
-        call per camera per SETTINGS_REFRESH_SECONDS.
+        The camera OWNER's settings, cached for a few seconds per camera.
+        Re-reading them from Supabase on every single frame would be one
+        network call per frame; this keeps thresholds live while collapsing
+        that to one call per camera per SETTINGS_REFRESH_SECONDS.
+
+        Using the owner's settings (rather than a global row, or the settings
+        of whoever happens to be logged in) is what makes per-user settings
+        meaningful: tuning User A's threshold cannot retune User B's camera.
         """
         now = time.monotonic()
         if self._settings_cache and (now - self._settings_cached_at) < SETTINGS_REFRESH_SECONDS:
             return self._settings_cache
 
-        row = settings_repo.get_settings_or_defaults()
+        row = settings_repo.get_settings_or_defaults(self.owner_id)
         # `.get(key, default)` (not `.get(key)`) on purpose: a plain `.get`
         # yields None for an absent column, and `bool(None)` is False, which
         # would silently disable snapshots instead of falling back to the
@@ -151,6 +184,7 @@ class CameraStreamWorker:
         self._settings_cached_at = now
         return cfg
 
+    owner_id: Optional[str] = None
     _settings_cache: Optional[dict] = None
     _settings_cached_at: float = 0.0
 
@@ -170,8 +204,10 @@ class CameraStreamWorker:
         camera_service.set_runtime_status(
             self.camera_id, "online" if connected else "offline",
             message=None if connected else "Unable to open camera stream",
+            user_id=self.owner_id,
         )
         broadcast_sync(self._loop, {
+            "user_id": self.owner_id,
             "type": "camera_status",
             "camera_id": self.camera_id,
             "status": "online" if connected else "offline",
@@ -202,8 +238,10 @@ class CameraStreamWorker:
                     placeholder = _placeholder_frame("CAMERA OFFLINE", "Check stream URL / connectivity")
                     self._publish_frame(placeholder)
                     camera_service.set_runtime_status(self.camera_id, "offline",
-                                                      message="Camera offline - no frames received")
+                                                      message="Camera offline - no frames received",
+                                                      user_id=self.owner_id)
                     broadcast_sync(self._loop, {
+                        "user_id": self.owner_id,
                         "type": "camera_status",
                         "camera_id": self.camera_id,
                         "status": "offline",
@@ -247,6 +285,7 @@ class CameraStreamWorker:
 
                     def _on_new_event(payload, is_new):
                         broadcast_sync(self._loop, {
+                            "user_id": self.owner_id,
                             "type": "detection",
                             "camera_id": self.camera_id,
                             "is_new_event": is_new,
@@ -254,7 +293,7 @@ class CameraStreamWorker:
                         })
 
                     def _on_alert(payload):
-                        broadcast_sync(self._loop, {"type": "alert", **payload})
+                        broadcast_sync(self._loop, {"user_id": self.owner_id, "type": "alert", **payload})
 
                     self._tracker.process_detections(
                         detections,
@@ -268,6 +307,7 @@ class CameraStreamWorker:
 
                     live_counts = self._tracker.current_counts()
                     broadcast_sync(self._loop, {
+                        "user_id": self.owner_id,
                         "type": "detection_count",
                         "camera_id": self.camera_id,
                         "counts": live_counts,
@@ -282,8 +322,10 @@ class CameraStreamWorker:
                     last_status_push_mono = now_mono
                     camera_service.set_runtime_status(self.camera_id, "online",
                                                       fps=self._actual_fps,
-                                                      latency_ms=inference_ms or None)
+                                                      latency_ms=inference_ms or None,
+                                                      user_id=self.owner_id)
                     broadcast_sync(self._loop, {
+                        "user_id": self.owner_id,
                         "type": "fps",
                         "camera_id": self.camera_id,
                         "fps": round(self._actual_fps, 1),
@@ -298,3 +340,7 @@ class CameraStreamWorker:
         if ok:
             with self._frame_lock:
                 self._latest_jpeg = buf.tobytes()
+
+
+
+
