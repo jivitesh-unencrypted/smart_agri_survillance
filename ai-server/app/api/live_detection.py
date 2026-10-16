@@ -89,11 +89,25 @@ def _announce_status(loop, camera_id: int, user_id: str, status: str) -> None:
     }, user_id=user_id)
 
 
+_BUSY = object()
+
+
 def _infer(detector, image: np.ndarray, conf, iou, draw: bool):
-    # YOLO's shared model instance is protected from overlapping calls.
-    with _inference_lock:
+    """Runs YOLO on one frame, or returns ``_BUSY`` if another frame is already running.
+
+    The model is never queued: a frame that arrives while inference is in progress
+    is refused at once, so the browser can retry later instead of waiting behind
+    frames the browser has already given up on. The lock is taken without blocking
+    and released in ``finally`` inside this worker thread, so a request that is
+    cancelled while waiting cannot leave the lock held.
+    """
+    if not _inference_lock.acquire(blocking=False):
+        return _BUSY
+    try:
         return detector.detect_frame(image, conf_threshold=conf, iou_threshold=iou, draw=draw,
                                      imgsz=_BROWSER_IMGSZ)
+    finally:
+        _inference_lock.release()
 
 
 def _process_session_frame(session: _BrowserSession, annotated, detections, loop) -> Dict[str, int]:
@@ -261,11 +275,19 @@ async def detect_browser_frame(
         iou = cfg.get("iou_threshold")
 
     try:
-        annotated, detections, frame_counts, inference_ms = await run_in_threadpool(
+        outcome = await run_in_threadpool(
             _infer, detector, image, conf, iou, session is not None,
         )
     except Exception as exc:  # keep model errors from surfacing as internal details
         raise HTTPException(status_code=503, detail="YOLO inference failed; check the AI server logs") from exc
+    if outcome is _BUSY:
+        # Refused, not queued: the browser retries this frame shortly.
+        raise HTTPException(
+            status_code=429,
+            detail="The AI server is busy analysing another frame. Retrying shortly.",
+            headers={"Retry-After": "2"},
+        )
+    annotated, detections, frame_counts, inference_ms = outcome
 
     counts = frame_counts
     if session is not None:
