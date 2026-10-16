@@ -67,10 +67,31 @@ app.add_middleware(
 )
 
 
+def _cors_headers_for(request) -> dict:
+    """
+    Starlette runs the generic Exception handler OUTSIDE the CORS middleware,
+    so a 500 from it would otherwise carry no Access-Control-Allow-Origin header.
+    The browser then reports the real failure as a CORS error and the app can
+    only guess at the cause. Adding the headers here keeps the 500 readable.
+    """
+    origin = request.headers.get("origin")
+    if origin and origin in settings.cors_origins_list:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+    return {}
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request, exc: Exception):
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error. Check the server logs."})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error. Check the server logs."},
+        headers=_cors_headers_for(request),
+    )
 
 
 @app.on_event("startup")
