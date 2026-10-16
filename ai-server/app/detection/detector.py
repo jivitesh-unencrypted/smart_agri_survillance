@@ -9,7 +9,7 @@ external.
 """
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Optional, Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
@@ -36,6 +36,7 @@ class YOLODetector:
         conf_threshold: float = None,
         iou_threshold: float = None,
         draw: bool = True,
+        imgsz: Optional[int] = None,
     ) -> Tuple[np.ndarray, List[Dict[str, Any]], Dict[str, int], float]:
         """
         Runs detection on a single BGR frame.
@@ -45,7 +46,10 @@ class YOLODetector:
         iou = iou_threshold if iou_threshold is not None else settings.DEFAULT_IOU_THRESHOLD
 
         start = time.monotonic()
-        results = self.model(frame_bgr, conf=conf, iou=iou, verbose=False)[0]
+        # imgsz lets a caller trade a little accuracy for much faster inference
+        # on small hosted CPUs (browser frames). None keeps the model default.
+        extra = {"imgsz": imgsz} if imgsz else {}
+        results = self.model(frame_bgr, conf=conf, iou=iou, verbose=False, **extra)[0]
         inference_ms = (time.monotonic() - start) * 1000.0
 
         detections: List[Dict[str, Any]] = []
