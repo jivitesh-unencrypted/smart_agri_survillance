@@ -96,19 +96,15 @@ _BUSY = object()
 
 
 def _infer(detector, image: np.ndarray, conf, iou, draw: bool):
-    """Runs YOLO on one frame, or returns ``_BUSY`` if another frame is already running.
-
-    The model is never queued: a frame that arrives while inference is in progress
-    is refused at once, so the browser can retry later instead of waiting behind
-    frames the browser has already given up on. The lock is taken without blocking
-    and released in ``finally`` inside this worker thread, so a request that is
-    cancelled while waiting cannot leave the lock held.
-    """
     if not _inference_lock.acquire(blocking=False):
         return _BUSY
+    started = time.monotonic()
     try:
-        return detector.detect_frame(image, conf_threshold=conf, iou_threshold=iou, draw=draw,
-                                     imgsz=_BROWSER_IMGSZ)
+        result = detector.detect_frame(image, conf_threshold=conf, iou_threshold=iou, draw=draw,
+                                       imgsz=_BROWSER_IMGSZ)
+        logger.info("YOLO frame done in %.0f ms (image %dx%d)",
+                    (time.monotonic() - started) * 1000, image.shape[1], image.shape[0])
+        return result
     finally:
         _inference_lock.release()
 
