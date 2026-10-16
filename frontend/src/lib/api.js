@@ -32,7 +32,9 @@ export const AI_SERVER_URL = (
   import.meta.env.VITE_AI_SERVER_URL || 'http://localhost:8000'
 ).replace(/\/+$/, '')
 
-export const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws'
+export const WS_URL =
+  import.meta.env.VITE_WS_URL ||
+  'wss://smart-agri-api-wzt8.onrender.com/ws'
 
 export class ApiError extends Error {
   constructor(message, status, detail) {
