@@ -9,6 +9,9 @@ const FRAME_HEIGHT = 480
 const MAX_FPS = 8
 const NEXT_FRAME_MS = 650
 const RETRY_MS = 2000
+// A frame that has not been answered after this long is abandoned, so a slow
+// or sleeping server shows a message instead of leaving the tile stuck.
+const FRAME_TIMEOUT_MS = 15000
 
 /** Turns getUserMedia / API failures into messages a non-technical user can act on. */
 export function describeCameraError(err) {
@@ -204,12 +207,26 @@ export function useBrowserCamera(camera) {
           form.append('frame', blob, 'frame.jpg')
           form.append('camera_id', String(id))
           const token = getToken()
-          const response = await fetch(`${AI_SERVER_URL}/api/live-detection/frame`, {
-            method: 'POST',
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            body: form,
-          })
-          const result = await response.json().catch(() => ({}))
+          const controller = new AbortController()
+          const timer = window.setTimeout(() => controller.abort(), FRAME_TIMEOUT_MS)
+          let response
+          let result
+          try {
+            response = await fetch(`${AI_SERVER_URL}/api/live-detection/frame`, {
+              method: 'POST',
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+              body: form,
+              signal: controller.signal,
+            })
+            result = await response.json().catch(() => ({}))
+          } catch (err) {
+            if (err.name === 'AbortError') {
+              throw new Error('The AI server did not answer in time. It may be busy or waking up; retrying.')
+            }
+            throw err
+          } finally {
+            window.clearTimeout(timer)
+          }
           if (!response.ok) {
             const detail = typeof result.detail === 'string' ? result.detail : null
             if (response.status === 409) {
