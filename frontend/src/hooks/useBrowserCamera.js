@@ -10,8 +10,9 @@ const MAX_FPS = 8
 const NEXT_FRAME_MS = 650
 const RETRY_MS = 2000
 // A frame that has not been answered after this long is abandoned, so a slow
-// or sleeping server shows a message instead of leaving the tile stuck.
-const FRAME_TIMEOUT_MS = 15000
+// or sleeping server shows a message instead of leaving the tile stuck. Kept
+// well above typical inference time so a nearly finished frame is not dropped.
+const FRAME_TIMEOUT_MS = 30000
 
 /** Turns getUserMedia / API failures into messages a non-technical user can act on. */
 export function describeCameraError(err) {
@@ -229,6 +230,13 @@ export function useBrowserCamera(camera) {
           }
           if (!response.ok) {
             const detail = typeof result.detail === 'string' ? result.detail : null
+            if (response.status === 429) {
+              // The server is still analysing an earlier frame. Keep the picture,
+              // show a short notice, and retry without queuing another frame.
+              delay = RETRY_MS
+              setError('The AI server is busy with an earlier frame. Retrying…')
+              return
+            }
             if (response.status === 409) {
               // The server no longer has this session (for example after a restart).
               sessionRef.current = false
