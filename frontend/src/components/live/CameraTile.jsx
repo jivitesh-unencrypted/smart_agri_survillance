@@ -100,11 +100,20 @@ function TileChrome({ camera, feed, expanded, onToggleExpand, onEdit, onDelete, 
           <img src={feed.streamSrc} alt={`${camera.name} live feed`} className="absolute inset-0 h-full w-full object-contain" />
         )}
         {feed.kind === 'canvas' && (
-          <canvas
-            ref={feed.canvasRef}
-            aria-label={`${camera.name} live feed`}
-            className={`absolute inset-0 h-full w-full object-contain ${feed.running ? '' : 'invisible'}`}
-          />
+          <>
+            <video
+              ref={feed.videoRef}
+              muted
+              playsInline
+              aria-label={`${camera.name} camera picture`}
+              className={`absolute inset-0 h-full w-full object-contain ${feed.running ? '' : 'hidden'}`}
+            />
+            <canvas
+              ref={feed.canvasRef}
+              aria-label={`${camera.name} live feed`}
+              className={`pointer-events-none absolute inset-0 h-full w-full object-contain ${feed.running ? '' : 'invisible'}`}
+            />
+          </>
         )}
         {placeholder && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center text-sm text-slate-500">
