@@ -561,3 +561,11 @@ Auth), plus a mock MJPEG camera, all offline-testable:
   stand-in for PostgREST/Storage/Auth. The SQL itself has not been executed
   against a live Supabase instance in this environment — run the migrations
   in section E first and confirm before relying on it.
+
+## Browser webcam live detection (Vercel + cloud AI API)
+
+The Live Monitoring page includes a **Browser Webcam · Cloud YOLO** panel. It requests camera permission from the visitor's browser, downsizes frames to at most 640x480, and sends one authenticated JPEG frame at a time to `POST /api/live-detection/frame`. The API uses the already-loaded YOLO detector and returns bounding boxes and category counts for the browser preview. It does not open the webcam attached to the Render host.
+
+For deployment, configure the Vercel frontend variables `VITE_AI_SERVER_URL` (the HTTPS base URL of the FastAPI service), `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY`. On the FastAPI host, set `CORS_ORIGINS` to include `https://smart-agri-survillance-jcfb.vercel.app` and any custom frontend domain. The AI service must also have its YOLO weights available at the configured `MODEL_PATH` (default `ai-server/models/yolov8n.pt`); model weights are intentionally not included in this repository ZIP. Browser webcam access requires HTTPS, except on localhost.
+
+This browser-frame endpoint currently returns live inference results to the page; it does **not** create persistent detection-history rows or alerts for each browser frame. The existing configured-camera event pipeline remains separate.
