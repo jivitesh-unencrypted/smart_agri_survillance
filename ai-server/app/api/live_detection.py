@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import require_authenticated_user
@@ -145,6 +145,15 @@ def discard_browser_session(user_id: str, camera_id: int) -> None:
         session.tracker.close_all()
 
 
+def _track_frame_safely(session, annotated, detections, loop) -> None:
+    """Runs event tracking; a storage problem is logged and never fails the frame."""
+    try:
+        _process_session_frame(session, annotated, detections, loop)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger("ai_server.live").exception("Browser camera %s: tracking failed", session.camera_id)
+
+
 def _owned_camera_or_404(camera_id: int, user_id: str) -> Dict[str, Any]:
     camera = camera_service.get_camera(camera_id, user_id=user_id)
     if camera is None:
@@ -197,9 +206,17 @@ async def stop_browser_session(camera_id: int, user: dict = Depends(require_auth
 async def detect_browser_frame(
     frame: UploadFile = File(...),
     camera_id: Optional[int] = Form(None),
+    background: BackgroundTasks = None,
     user: dict = Depends(require_authenticated_user),
 ):
-    """Run YOLO on one browser-captured JPEG and return normalized box data."""
+    """
+    Run YOLO on one browser-captured JPEG and return normalized box data.
+
+    The reply goes out as soon as inference finishes. Event tracking (Supabase
+    writes, snapshots) runs in a background task: on a small hosted CPU those
+    writes can take longer than the proxy's timeout, which the browser then sees
+    as a 502 even though the detection was recorded.
+    """
     if frame.content_type not in _ALLOWED_FRAME_TYPES:
         raise HTTPException(status_code=415, detail="Send a JPEG or PNG frame")
 
@@ -249,10 +266,11 @@ async def detect_browser_frame(
     counts = frame_counts
     if session is not None:
         loop = asyncio.get_running_loop()
-        try:
-            counts = await run_in_threadpool(_process_session_frame, session, annotated, detections, loop)
-        except Exception:  # tracking/storage trouble must not drop the live result
-            counts = frame_counts
+        track = _track_frame_safely
+        if background is not None:
+            background.add_task(track, session, annotated, detections, loop)
+        else:
+            track(session, annotated, detections, loop)
 
     return {
         "width": width,
@@ -260,6 +278,8 @@ async def detect_browser_frame(
         "detections": detections,
         "counts": counts,
         "frame_counts": frame_counts,
+        # For browser cameras `counts` are the objects in this frame. Event grouping
+        # (the Detections page) is tracked in the background.
         "inference_ms": round(inference_ms, 1),
         "camera_id": camera_id,
         "tracked": session is not None,
