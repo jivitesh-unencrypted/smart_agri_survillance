@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     DEFAULT_IOU_THRESHOLD: float = 0.45
 
     # --- CORS: the frontend origin(s) allowed to call this local server ---
-    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,https://smart-agri-survillance-jcfb.vercel.app"
 
     # --- Local server bind address ---
     # 0.0.0.0 is what you want once the frontend is on Cloudflare Pages and
