@@ -40,6 +40,9 @@ _sessions: Dict[tuple, "_BrowserSession"] = {}
 
 _MAX_FRAME_BYTES = 1_500_000
 _MAX_SIDE = 1280
+# YOLO input size for browser frames. 416 is roughly 2.4x fewer pixels than the
+# default 640, which matters most on a small hosted CPU.
+_BROWSER_IMGSZ = 416
 _SETTINGS_TTL_SECONDS = 10.0
 _ALLOWED_FRAME_TYPES = {"image/jpeg", "image/jpg", "image/png", "application/octet-stream"}
 
@@ -89,7 +92,8 @@ def _announce_status(loop, camera_id: int, user_id: str, status: str) -> None:
 def _infer(detector, image: np.ndarray, conf, iou, draw: bool):
     # YOLO's shared model instance is protected from overlapping calls.
     with _inference_lock:
-        return detector.detect_frame(image, conf_threshold=conf, iou_threshold=iou, draw=draw)
+        return detector.detect_frame(image, conf_threshold=conf, iou_threshold=iou, draw=draw,
+                                     imgsz=_BROWSER_IMGSZ)
 
 
 def _process_session_frame(session: _BrowserSession, annotated, detections, loop) -> Dict[str, int]:
