@@ -278,8 +278,10 @@ async def detect_browser_frame(
         outcome = await run_in_threadpool(
             _infer, detector, image, conf, iou, session is not None,
         )
-    except Exception as exc:  # keep model errors from surfacing as internal details
+    except Exception as exc:
+      logging.getLogger("ai_server.live").exception("YOLO inference failed")
         raise HTTPException(status_code=503, detail="YOLO inference failed; check the AI server logs") from exc
+        
     if outcome is _BUSY:
         # Refused, not queued: the browser retries this frame shortly.
         raise HTTPException(
