@@ -200,18 +200,28 @@ CATEGORY_BOX_COLOR_BGR = {
 
 # Connection types a camera can be configured with (kept identical to
 # the original app's vocabulary so migrated camera data lines up).
+# local_webcam  = OpenCV device index opened BY THE AI SERVER process. It only
+#                 finds a USB camera when the server runs on the same computer.
+# browser_webcam = a camera the visitor's browser opens with getUserMedia (built-in
+#                 or USB UVC camera on the device they are browsing from). The
+#                 server never opens it; frames are posted to /api/live-detection.
+# ip/rtsp/http  = network streams opened by the AI server (must be reachable from it).
 CONNECTION_TYPE_LOCAL = "local_webcam"
+CONNECTION_TYPE_BROWSER = "browser_webcam"
 CONNECTION_TYPE_IP = "ip_camera"
 CONNECTION_TYPE_RTSP = "rtsp"
 CONNECTION_TYPE_HTTP = "http_mjpeg"
 
 CONNECTION_TYPES = {
-    CONNECTION_TYPE_LOCAL: "Local Webcam",
+    CONNECTION_TYPE_BROWSER: "Browser Webcam / USB (this device)",
+    CONNECTION_TYPE_LOCAL: "USB Camera (AI server host)",
     CONNECTION_TYPE_IP: "IP Camera",
     CONNECTION_TYPE_RTSP: "RTSP Stream",
     CONNECTION_TYPE_HTTP: "HTTP/MJPEG Stream",
 }
 NETWORK_CONNECTION_TYPES = {CONNECTION_TYPE_IP, CONNECTION_TYPE_RTSP, CONNECTION_TYPE_HTTP}
+# Cameras whose frames the browser sends in, rather than the server pulling them.
+BROWSER_CONNECTION_TYPES = {CONNECTION_TYPE_BROWSER}
 
 # Reconnect / event-grouping tuning (also user-configurable via Supabase
 # `settings`, which is polled continuously by each camera worker).

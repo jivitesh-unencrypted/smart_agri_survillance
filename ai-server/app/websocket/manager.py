@@ -101,8 +101,17 @@ def broadcast_sync(loop: asyncio.AbstractEventLoop, message: Dict[str, Any],
     threads run outside the event loop). Fire-and-forget by design -
     a dropped telemetry message should never block detection.
 
-    `user_id` must be the owner of whatever the message is about.
+    The owner is taken from `user_id`. Camera workers historically put the owner
+    only inside the message body (`{"user_id": ..., "type": ...}`), which the
+    filter never read, so those messages reached every signed-in user. A body
+    `user_id` is therefore used as the filter when no explicit owner is given,
+    and a message that names no owner at all is dropped rather than fanned out.
     """
+    if user_id is None and "user_id" in message:
+        user_id = message.get("user_id")
+        if user_id is None:
+            # Owner-less camera/detection data is never delivered to other users.
+            return
     try:
         asyncio.run_coroutine_threadsafe(manager.broadcast(message, user_id=user_id), loop)
     except Exception:  # noqa: BLE001

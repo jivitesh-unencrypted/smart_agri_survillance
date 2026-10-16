@@ -562,10 +562,34 @@ Auth), plus a mock MJPEG camera, all offline-testable:
   against a live Supabase instance in this environment — run the migrations
   in section E first and confirm before relying on it.
 
-## Browser webcam live detection (Vercel + cloud AI API)
+## Live Monitoring: browser, USB and IP cameras (Vercel + Render)
 
-The Live Monitoring page includes a **Browser Webcam · Cloud YOLO** panel. It requests camera permission from the visitor's browser, downsizes frames to at most 640x480, and sends one authenticated JPEG frame at a time to `POST /api/live-detection/frame`. The API uses the already-loaded YOLO detector and returns bounding boxes and category counts for the browser preview. It does not open the webcam attached to the Render host.
+Live Monitoring shows every configured camera as one tile, with the same frame box, status badge, detection counts and controls, whatever its connection type. Cameras are added, edited and removed through the same **Add Camera** form used on the Cameras page.
 
-For deployment, configure the Vercel frontend variables `VITE_AI_SERVER_URL` (the HTTPS base URL of the FastAPI service), `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY`. On the FastAPI host, set `CORS_ORIGINS` to include `https://smart-agri-survillance-jcfb.vercel.app` and any custom frontend domain. The AI service must also have its YOLO weights available at the configured `MODEL_PATH` (default `ai-server/models/yolov8n.pt`); model weights are intentionally not included in this repository ZIP. Browser webcam access requires HTTPS, except on localhost.
+| Connection type | Who opens the camera | Where it works |
+|---|---|---|
+| **Browser Webcam / USB** (`browser_webcam`) | The visitor's browser, via `getUserMedia`. Frames are posted to `POST /api/live-detection/frame` with the camera id. | Any browser over HTTPS (or localhost). Covers built-in cameras and most USB webcams plugged into the viewing device. |
+| **USB (AI server host)** (`local_webcam`) | The AI server process, via OpenCV device index. | Only when the AI server runs on the same computer as the camera. |
+| **IP / RTSP / HTTP-MJPEG** (`ip_camera`, `rtsp`, `http_mjpeg`) | The AI server, via its stream worker. | When the AI server can reach the camera address. A LAN-only address (192.168.x.x, 10.x, 172.16–31.x) cannot be reached from Render. Use a public, port-forwarded or VPN address. |
 
-This browser-frame endpoint currently returns live inference results to the page; it does **not** create persistent detection-history rows or alerts for each browser frame. The existing configured-camera event pipeline remains separate.
+Browser-camera detections go through the same event tracker as network cameras, so they produce detection rows, alerts and snapshots, and their telemetry reaches only the camera's owner over the WebSocket.
+
+### Deployment steps
+
+1. **Database:** apply `supabase/migrations/0007_browser_webcam_connection_type.sql`. It widens the `cameras.connection_type` check constraint. Without it, browser cameras cannot be saved.
+2. **Render (FastAPI):** deploy the updated `ai-server`. Keep `CORS_ORIGINS` including the Vercel origin (`https://smart-agri-survillance-jcfb.vercel.app`) and any custom domain. YOLO weights must be present at `MODEL_PATH`.
+3. **Vercel (frontend):** set `VITE_AI_SERVER_URL` (the HTTPS base URL of the Render service), `VITE_WS_URL` (the `wss://…/ws` URL), `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Redeploy.
+4. Open the site over HTTPS. Browser cameras will not start over plain HTTP.
+
+### Browser-camera API
+
+- `POST /api/live-detection/sessions/{camera_id}/start` marks a browser camera live and sets its status to online. Only browser cameras you own are accepted.
+- `POST /api/live-detection/frame` (multipart: `frame`, optional `camera_id`). With `camera_id`, the camera must have an active session, otherwise 409 is returned. The response includes `counts` (the tracker's current counts), `frame_counts`, `detections`, `width`, `height` and `inference_ms`.
+- `POST /api/live-detection/sessions/{camera_id}/stop` finalises open events and marks the camera offline. The browser also calls it with `keepalive` on page hide, so the camera is not left marked live.
+
+### Limitations
+
+- Browser boxes are drawn in the browser on the frame that was sent, so the display updates at inference speed (a few frames per second), not at video frame rate. Server-side IP and USB feeds are annotated on the server and stream at their own rate.
+- If a browser tab closes without stopping, the database keeps the camera online until its next start or stop.
+- Browser cameras need HTTPS (or localhost) and one browser permission grant per device.
+- Frames are sent only while the page is open. Nothing runs in the background when the browser is closed.

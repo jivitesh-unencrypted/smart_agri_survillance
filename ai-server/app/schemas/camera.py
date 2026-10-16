@@ -10,7 +10,7 @@ class CameraBase(BaseModel):
     description: Optional[str] = ""
     zone: Optional[str] = ""
     camera_type: str = "Local Webcam"
-    connection_type: str = "local_webcam"  # local_webcam | ip_camera | rtsp | http_mjpeg
+    connection_type: str = "local_webcam"  # local_webcam | browser_webcam | ip_camera | rtsp | http_mjpeg
     device_index: Optional[int] = 0
     stream_url: Optional[str] = ""
     username: Optional[str] = ""
@@ -19,7 +19,7 @@ class CameraBase(BaseModel):
     @field_validator("connection_type")
     @classmethod
     def _valid_connection_type(cls, v):
-        allowed = {"local_webcam", "ip_camera", "rtsp", "http_mjpeg"}
+        allowed = {"local_webcam", "browser_webcam", "ip_camera", "rtsp", "http_mjpeg"}
         if v not in allowed:
             raise ValueError(f"connection_type must be one of {sorted(allowed)}")
         return v

@@ -8,7 +8,9 @@ from fastapi.responses import StreamingResponse
 
 from app import supabase_client as sc
 from app.api.deps import require_authenticated_user
+from app.api.live_detection import discard_browser_session
 from app.camera.testing import test_connection
+from app.core.config import BROWSER_CONNECTION_TYPES, NETWORK_CONNECTION_TYPES
 from app.repositories import cameras as cameras_repo
 from app.schemas.camera import CameraCreate, CameraOut, CameraTestResult, CameraUpdate
 from app.services import camera_service
@@ -31,7 +33,7 @@ def list_cameras(user: dict = Depends(require_authenticated_user)):
 
 @router.post("", response_model=CameraOut, status_code=201)
 def create_camera(payload: CameraCreate, user: dict = Depends(require_authenticated_user)):
-    if payload.connection_type != "local_webcam" and not (payload.stream_url or "").strip():
+    if payload.connection_type in NETWORK_CONNECTION_TYPES and not (payload.stream_url or "").strip():
         raise HTTPException(status_code=422, detail="stream_url is required for IP / RTSP / HTTP cameras")
     # The owner comes from the verified access token, not from the request body.
     camera = camera_service.create_camera(payload.model_dump(), user_id=user["id"])
@@ -50,7 +52,7 @@ def get_camera(camera_id: int, user: dict = Depends(require_authenticated_user))
 
 @router.put("/{camera_id}", response_model=CameraOut)
 def update_camera(camera_id: int, payload: CameraUpdate, user: dict = Depends(require_authenticated_user)):
-    if payload.connection_type != "local_webcam" and not (payload.stream_url or "").strip():
+    if payload.connection_type in NETWORK_CONNECTION_TYPES and not (payload.stream_url or "").strip():
         raise HTTPException(status_code=422, detail="stream_url is required for IP / RTSP / HTTP cameras")
     camera = camera_service.update_camera(camera_id, payload.model_dump(), user_id=user["id"])
     if camera is None:
@@ -67,8 +69,12 @@ def delete_camera(camera_id: int, request: Request, user: dict = Depends(require
         raise HTTPException(status_code=404, detail="Camera not found")
 
     _stream_manager(request).stop_camera(camera_id)
+    discard_browser_session(user["id"], camera_id)
     if not camera_service.delete_camera(camera_id, user_id=user["id"]):
         raise HTTPException(status_code=404, detail="Camera not found")
+
+
+_BROWSER_CAMERA_MESSAGE = "Browser webcams run in the browser. Open Live Monitoring to start one."
 
 
 @router.post("/{camera_id}/test", response_model=CameraTestResult)
@@ -76,6 +82,8 @@ def test_camera(camera_id: int, user: dict = Depends(require_authenticated_user)
     camera = camera_service.get_camera(camera_id, user_id=user["id"])
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found")
+    if camera.get("connection_type") in BROWSER_CONNECTION_TYPES:
+        raise HTTPException(status_code=400, detail=_BROWSER_CAMERA_MESSAGE)
 
     result = test_connection(camera_service.build_source(camera))
 
@@ -98,6 +106,8 @@ def start_camera(camera_id: int, request: Request, user: dict = Depends(require_
     camera = camera_service.get_camera(camera_id, user_id=user["id"])
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found")
+    if camera.get("connection_type") in BROWSER_CONNECTION_TYPES:
+        raise HTTPException(status_code=400, detail=_BROWSER_CAMERA_MESSAGE)
     if not camera.get("enabled"):
         raise HTTPException(status_code=400, detail="Camera is disabled")
     _stream_manager(request).start_camera(

@@ -18,7 +18,11 @@ from app.camera.credentials import (
     obfuscate_secret,
     resolve_credential,
 )
-from app.core.config import CONNECTION_TYPE_LOCAL, NETWORK_CONNECTION_TYPES
+from app.core.config import (
+    BROWSER_CONNECTION_TYPES,
+    CONNECTION_TYPE_LOCAL,
+    NETWORK_CONNECTION_TYPES,
+)
 from app.repositories import cameras as cameras_repo
 
 logger = logging.getLogger("ai_server.cameras")
@@ -58,7 +62,8 @@ def _resolve_password_field(data: Dict[str, Any], existing: Optional[str]) -> Op
 
 def create_camera(data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     connection_type = data.get("connection_type", CONNECTION_TYPE_LOCAL)
-    password_field = _resolve_password_field(data, None)
+    # A browser camera has no server-side credentials: the browser opens it.
+    password_field = None if connection_type in BROWSER_CONNECTION_TYPES else _resolve_password_field(data, None)
 
     payload = {
         "camera_code": cameras_repo.generate_camera_code(user_id),
@@ -92,10 +97,12 @@ def update_camera(camera_id: int, data: Dict[str, Any],
     if camera is None:
         return None
 
-    existing_secret = cameras_repo.get_camera_secret(camera_id)
-    password_field = _resolve_password_field(data, (existing_secret or {}).get("password"))
-
     connection_type = data.get("connection_type", camera.get("connection_type"))
+    if connection_type in BROWSER_CONNECTION_TYPES:
+        password_field = None
+    else:
+        existing_secret = cameras_repo.get_camera_secret(camera_id)
+        password_field = _resolve_password_field(data, (existing_secret or {}).get("password"))
     updates = {
         "name": (data.get("name") or "").strip(),
         "location": (data.get("location") or "").strip(),
@@ -144,6 +151,10 @@ def _clean_stream_url(url: str) -> str:
 
 def build_source(camera: Dict[str, Any]):
     """Resolves a camera row to a source usable by CameraCapture."""
+    if camera.get("connection_type") in BROWSER_CONNECTION_TYPES:
+        # The server has no access to a browser camera; refusing here keeps a
+        # worker from ever trying to open the AI host's own webcam by mistake.
+        raise ValueError("Browser webcams are opened by the browser, not by the AI server")
     if camera.get("connection_type") == CONNECTION_TYPE_LOCAL:
         return int(camera.get("device_index") or 0)
 
@@ -175,7 +186,9 @@ def camera_to_out_dict(camera: Dict[str, Any]) -> Dict[str, Any]:
         # whole camera list because the cloud is briefly unreachable.
         logger.warning("Could not read camera secret for camera %s", camera.get("id"))
 
-    if camera.get("connection_type") == CONNECTION_TYPE_LOCAL:
+    if camera.get("connection_type") in BROWSER_CONNECTION_TYPES:
+        stream_display = "Browser device (choose on Live Monitoring)"
+    elif camera.get("connection_type") == CONNECTION_TYPE_LOCAL:
         stream_display = f"Device index {camera.get('device_index') if camera.get('device_index') is not None else 0}"
     else:
         stream_display = camera.get("stream_url") or ""
