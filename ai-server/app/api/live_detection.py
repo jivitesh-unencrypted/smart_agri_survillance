@@ -14,6 +14,7 @@ Two modes share one endpoint:
   broadcast to the owner over the WebSocket.
 """
 import asyncio
+import logging
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -30,6 +31,8 @@ from app.repositories import settings as settings_repo
 from app.services import camera_service
 from app.services.detection_service import CameraEventTracker
 from app.websocket.manager import broadcast_sync
+
+logger = logging.getLogger("ai_server.live")
 
 router = APIRouter(prefix="/api/live-detection", tags=["live detection"])
 
@@ -168,8 +171,7 @@ def _track_frame_safely(session, annotated, detections, loop) -> None:
     try:
         _process_session_frame(session, annotated, detections, loop)
     except Exception:  # noqa: BLE001
-        import logging
-        logging.getLogger("ai_server.live").exception("Browser camera %s: tracking failed", session.camera_id)
+        logger.exception("Browser camera %s: tracking failed", session.camera_id)
 
 
 def _owned_camera_or_404(camera_id: int, user_id: str) -> Dict[str, Any]:
@@ -278,10 +280,10 @@ async def detect_browser_frame(
         outcome = await run_in_threadpool(
             _infer, detector, image, conf, iou, session is not None,
         )
-    except Exception as exc:
-      logging.getLogger("ai_server.live").exception("YOLO inference failed")
+    except Exception as exc:  # keep model errors from surfacing as internal details
+        logger.exception("YOLO inference failed")
         raise HTTPException(status_code=503, detail="YOLO inference failed; check the AI server logs") from exc
-        
+
     if outcome is _BUSY:
         # Refused, not queued: the browser retries this frame shortly.
         raise HTTPException(
