@@ -4,6 +4,7 @@ import { api, streamUrl } from '../lib/api'
 import { useToast } from '../hooks/useToast.jsx'
 import { categoryColor, severityColor } from '../lib/utils'
 import { useUserScope } from '../lib/userScope'
+import BrowserWebcamPanel from '../components/BrowserWebcamPanel'
 
 export default function LiveMonitoring({ socket }) {
   const [cameras, setCameras] = useState([])
@@ -100,6 +101,8 @@ export default function LiveMonitoring({ socket }) {
         <h1 className="text-xl font-semibold text-slate-100">Live Monitoring</h1>
         <p className="text-sm text-slate-500">Continuous real-time video and YOLO object detection.</p>
       </div>
+
+      <BrowserWebcamPanel />
 
       <div className="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-6">
         {/* Controls column */}

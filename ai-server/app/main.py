@@ -32,6 +32,7 @@ from app.api import (
     auth,
     cameras,
     detections,
+    live_detection,
     settings as settings_api,
     system,
     video_analysis,
@@ -51,8 +52,7 @@ app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description=(
-        "Local AI/camera server. Runs YOLO + OpenCV on your own machine, serves the live "
-        "stream and WebSocket telemetry, and syncs detection events to Supabase. No cloud AI."
+        "AI/camera server. Runs YOLO + OpenCV for configured cameras and authenticated browser-captured frames."
     ),
 )
 
@@ -141,6 +141,7 @@ async def on_shutdown():
 app.include_router(auth.router)
 app.include_router(cameras.router)
 app.include_router(detections.router)
+app.include_router(live_detection.router)
 app.include_router(alerts.router)
 app.include_router(analytics.router)
 app.include_router(settings_api.router)
@@ -162,5 +163,5 @@ def root():
         "version": settings.APP_VERSION,
         "status": "running",
         "docs": "/docs",
-        "role": "Local AI/camera server (YOLO + OpenCV). The dashboard UI is served from Cloudflare Pages.",
+        "role": "AI server (YOLO + OpenCV). The dashboard UI is served separately.",
     }
