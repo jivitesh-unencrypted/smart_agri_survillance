@@ -1,214 +1,197 @@
 import React, { useEffect, useState } from 'react'
-import { Plus, Pencil, Trash2, PlugZap, Play, Square, MapPin } from 'lucide-react'
+import { X } from 'lucide-react'
 import { api } from '../lib/api'
 import { useToast } from '../hooks/useToast.jsx'
-import StatusBadge from '../components/StatusBadge.jsx'
-import ConfirmDialog from '../components/ConfirmDialog.jsx'
-import CameraFormModal from '../components/CameraFormModal.jsx'
-import { useUserScope } from '../lib/userScope'
 
-export default function Cameras({ socket }) {
-  const [cameras, setCameras] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [formOpen, setFormOpen] = useState(false)
-  const [editing, setEditing] = useState(null)
-  const [deleteTarget, setDeleteTarget] = useState(null)
-  const [testingId, setTestingId] = useState(null)
-  const toast = useToast()
-  // Cameras are owned per user, so the list is reloaded on an account change.
-  // `setCameras([])` first so the previous owner's cameras are not rendered
-  // while the new list is in flight.
-  const epoch = useUserScope()
+const CONNECTION_TYPES = [
+  { value: 'local_webcam', label: 'Local Webcam' },
+  { value: 'ip_camera', label: 'IP Camera' },
+  { value: 'rtsp', label: 'RTSP Stream' },
+  { value: 'http_mjpeg', label: 'HTTP/MJPEG Stream' },
+]
 
-  const load = async () => {
-    try {
-      const list = await api.get('/api/cameras')
-      setCameras(list)
-    } catch (err) {
-      toast.error(err.detail || 'Failed to load cameras')
-    } finally {
-      setLoading(false)
-    }
-  }
+const CAMERA_TYPES = ['Local Webcam', 'USB Camera', 'IP Camera', 'RTSP Camera', 'Network Camera']
 
-  useEffect(() => {
-    setCameras([])
-    load()
-  }, [epoch])
-
-  useEffect(() => {
-    return socket?.subscribe((evt) => {
-      if (evt.type === 'camera_status') load()
-    })
-  }, [socket?.subscribe])
-
-  const handleTest = async (camera) => {
-    setTestingId(camera.id)
-    try {
-      const result = await api.post(`/api/cameras/${camera.id}/test`)
-      if (result.success) {
-        toast.success(`${camera.name}: stream is available (${result.latency_ms?.toFixed(0)} ms)`)
-      } else {
-        toast.error(`${camera.name}: ${result.message}`)
-      }
-      load()
-    } catch (err) {
-      toast.error(err.detail || 'Connection test failed')
-    } finally {
-      setTestingId(null)
-    }
-  }
-
-  const handleStartStop = async (camera) => {
-    try {
-      if (camera.status === 'online') {
-        await api.post(`/api/cameras/${camera.id}/stop`)
-        toast.info(`${camera.name} stopped`)
-      } else {
-        await api.post(`/api/cameras/${camera.id}/start`)
-        toast.success(`${camera.name} starting…`)
-      }
-      setTimeout(load, 800)
-    } catch (err) {
-      toast.error(err.detail || 'Action failed')
-    }
-  }
-
-  const handleDelete = async () => {
-    if (!deleteTarget) return
-    try {
-      await api.delete(`/api/cameras/${deleteTarget.id}`)
-      toast.success(`Camera ${deleteTarget.name} deleted`)
-      setDeleteTarget(null)
-      load()
-    } catch (err) {
-      toast.error(err.detail || 'Failed to delete camera')
-    }
-  }
-
-  const online = cameras.filter((c) => c.status === 'online').length
-  const offline = cameras.filter((c) => c.status === 'offline').length
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-100">Camera Management</h1>
-          <p className="text-sm text-slate-500">Manage local and remote surveillance cameras.</p>
-        </div>
-        <button className="btn btn-primary" onClick={() => { setEditing(null); setFormOpen(true) }}>
-          <Plus size={16} /> Add Camera
-        </button>
-      </div>
-
-      <div className="card">
-        <div className="grid grid-cols-3 gap-4 text-center">
-          <div>
-            <div className="text-2xl font-semibold text-slate-100">{cameras.length}</div>
-            <div className="text-xs text-slate-500">Cameras</div>
-          </div>
-          <div>
-            <div className="text-2xl font-semibold text-emerald-400">{online}</div>
-            <div className="text-xs text-slate-500">Online</div>
-          </div>
-          <div>
-            <div className="text-2xl font-semibold text-red-400">{offline}</div>
-            <div className="text-xs text-slate-500">Offline</div>
-          </div>
-        </div>
-      </div>
-
-      {loading ? (
-        <p className="text-sm text-slate-500">Loading cameras…</p>
-      ) : cameras.length === 0 ? (
-        <div className="card text-center py-10">
-          <p className="text-slate-400 mb-3">No cameras configured yet.</p>
-          <button className="btn btn-primary" onClick={() => setFormOpen(true)}>
-            <Plus size={16} /> Add your first camera
-          </button>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {cameras.map((c) => (
-            <div key={c.id} className="card">
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <div className="font-medium text-slate-100">{c.name}</div>
-                  <div className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
-                    {c.camera_code} · {c.connection_type}
-                    {c.location && (<><MapPin size={11} className="ml-1" /> {c.location}</>)}
-                  </div>
-                </div>
-                <StatusBadge status={c.status} />
-              </div>
-
-              <div className="grid grid-cols-3 gap-2 my-3 text-center">
-                <MiniMetric label="FPS" value={c.last_fps ? c.last_fps.toFixed(0) : '—'} />
-                <MiniMetric label="Latency" value={c.last_latency_ms ? `${c.last_latency_ms.toFixed(0)}ms` : '—'} />
-                <MiniMetric label="Status" value={c.enabled ? 'Enabled' : 'Disabled'} />
-              </div>
-
-              {c.last_error && c.status === 'offline' && (
-                <p className="text-xs text-red-400 mb-2">⚠ {c.last_error}</p>
-              )}
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2">
-                <button
-                  className="btn btn-secondary text-xs px-2 py-1.5"
-                  onClick={() => handleStartStop(c)}
-                >
-                  {c.status === 'online' ? <Square size={13} /> : <Play size={13} />}
-                  {c.status === 'online' ? 'Stop' : 'Start'}
-                </button>
-                <button
-                  className="btn btn-secondary text-xs px-2 py-1.5"
-                  disabled={testingId === c.id}
-                  onClick={() => handleTest(c)}
-                >
-                  <PlugZap size={13} /> Test
-                </button>
-                <button
-                  className="btn btn-secondary text-xs px-2 py-1.5"
-                  onClick={() => { setEditing(c); setFormOpen(true) }}
-                >
-                  <Pencil size={13} /> Edit
-                </button>
-                <button
-                  className="btn btn-secondary text-xs px-2 py-1.5 hover:!bg-red-600/20 hover:!text-red-400"
-                  onClick={() => setDeleteTarget(c)}
-                >
-                  <Trash2 size={13} /> Delete
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <CameraFormModal
-        open={formOpen}
-        camera={editing}
-        onClose={() => setFormOpen(false)}
-        onSaved={() => { setFormOpen(false); load() }}
-      />
-
-      <ConfirmDialog
-        open={!!deleteTarget}
-        title="Delete camera?"
-        message={`This will permanently remove "${deleteTarget?.name}" and its detection history cannot be recovered.`}
-        confirmLabel="Delete"
-        onConfirm={handleDelete}
-        onCancel={() => setDeleteTarget(null)}
-      />
-    </div>
-  )
+const DEFAULT_FORM = {
+  name: '', location: '', description: '', zone: '',
+  camera_type: 'Local Webcam', connection_type: 'local_webcam',
+  device_index: 0, stream_url: '', username: '', password: '',
+  password_is_env: false, enabled: true,
 }
 
-function MiniMetric({ label, value }) {
+export default function CameraFormModal({ open, camera, onClose, onSaved }) {
+  const [form, setForm] = useState(DEFAULT_FORM)
+  const [saving, setSaving] = useState(false)
+  const toast = useToast()
+  const isEdit = !!camera
+
+  useEffect(() => {
+    if (camera) {
+      setForm({
+        name: camera.name || '',
+        location: camera.location || '',
+        description: camera.description || '',
+        zone: camera.zone || '',
+        camera_type: camera.camera_type || 'Local Webcam',
+        connection_type: camera.connection_type || 'local_webcam',
+        device_index: camera.device_index ?? 0,
+        stream_url: camera.stream_url_display || '',
+        username: camera.username || '',
+        password: '',
+        password_is_env: false,
+        enabled: camera.enabled ?? true,
+      })
+    } else {
+      setForm(DEFAULT_FORM)
+    }
+  }, [camera, open])
+
+  if (!open) return null
+
+  const set = (key, value) => setForm((f) => ({ ...f, [key]: value }))
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    if (!form.name.trim()) {
+      toast.error('Camera name is required')
+      return
+    }
+    if (form.connection_type !== 'local_webcam' && !form.stream_url.trim()) {
+      toast.error('Stream URL is required for IP / RTSP / HTTP cameras')
+      return
+    }
+
+    setSaving(true)
+    try {
+      const payload = { ...form, device_index: Number(form.device_index) || 0 }
+      if (isEdit) {
+        payload.keep_existing_password = !form.password
+        await api.put(`/api/cameras/${camera.id}`, payload)
+        toast.success(`Camera "${form.name}" updated`)
+      } else {
+        await api.post('/api/cameras', payload)
+        toast.success(`Camera "${form.name}" added`)
+      }
+      onSaved()
+    } catch (err) {
+      toast.error(err.detail || 'Failed to save camera')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <div className="bg-slate-800/50 rounded-lg py-1.5">
-      <div className="text-sm font-medium text-slate-200">{value}</div>
-      <div className="text-[10px] text-slate-500 uppercase">{label}</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+      <div className="card w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-slate-100">{isEdit ? `Edit Camera — ${camera.camera_code}` : 'Add Camera'}</h2>
+          <button className="btn btn-ghost p-1.5" onClick={onClose}><X size={18} /></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Camera Name</label>
+              <input className="input" value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Farm Main Gate" required />
+            </div>
+            <div>
+              <label className="label">Location</label>
+              <input className="input" value={form.location} onChange={(e) => set('location', e.target.value)} placeholder="North Field" />
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Description</label>
+            <textarea className="input" rows={2} value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Main entrance surveillance camera" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Camera Type</label>
+              <select className="input" value={form.camera_type} onChange={(e) => set('camera_type', e.target.value)}>
+                {CAMERA_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="label">Zone (optional)</label>
+              <input className="input" value={form.zone} onChange={(e) => set('zone', e.target.value)} placeholder="North Field Zone" />
+            </div>
+          </div>
+
+          <div>
+            <label className="label">Connection Type</label>
+            <div className="grid grid-cols-2 gap-2">
+              {CONNECTION_TYPES.map((ct) => (
+                <button
+                  type="button"
+                  key={ct.value}
+                  onClick={() => set('connection_type', ct.value)}
+                  className={`text-xs rounded-lg py-2 border transition-colors ${
+                    form.connection_type === ct.value
+                      ? 'bg-brand-600/20 border-brand-600 text-brand-300'
+                      : 'bg-slate-900 border-slate-700 text-slate-400 hover:border-slate-600'
+                  }`}
+                >
+                  {ct.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {form.connection_type === 'local_webcam' ? (
+            <div>
+              <label className="label">Camera Device</label>
+              <select className="input" value={form.device_index} onChange={(e) => set('device_index', e.target.value)}>
+                {[0, 1, 2, 3, 4].map((i) => <option key={i} value={i}>Webcam {i}</option>)}
+              </select>
+            </div>
+          ) : (
+            <>
+              <div>
+                <label className="label">Stream URL</label>
+                <input
+                  className="input"
+                  value={form.stream_url}
+                  onChange={(e) => set('stream_url', e.target.value)}
+                  placeholder={form.connection_type === 'rtsp' ? 'rtsp://192.168.1.100:554/stream' : 'http://192.168.1.100:8080/video'}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label">Username (optional)</label>
+                  <input className="input" value={form.username} onChange={(e) => set('username', e.target.value)} />
+                </div>
+                <div>
+                  <label className="label">Password (optional)</label>
+                  <input
+                    type="password"
+                    className="input"
+                    value={form.password}
+                    onChange={(e) => set('password', e.target.value)}
+                    placeholder={isEdit ? 'leave blank to keep unchanged' : 'leave blank for no password'}
+                  />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                <input type="checkbox" checked={form.password_is_env} onChange={(e) => set('password_is_env', e.target.checked)} />
+                Store as environment variable reference (recommended) — the password field above becomes the variable name.
+              </label>
+            </>
+          )}
+
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            <input type="checkbox" checked={form.enabled} onChange={(e) => set('enabled', e.target.checked)} />
+            Enabled
+          </label>
+
+          <div className="flex gap-2 pt-2">
+            <button type="button" className="btn btn-secondary flex-1" onClick={onClose}>Cancel</button>
+            <button type="submit" disabled={saving} className="btn btn-primary flex-1">
+              {isEdit ? 'Save Camera' : 'Add Camera'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   )
 }
