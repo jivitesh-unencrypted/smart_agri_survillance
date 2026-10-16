@@ -75,8 +75,11 @@ export function useBrowserCamera(camera) {
   const [fps, setFps] = useState(null)
   const [inferenceMs, setInferenceMs] = useState(null)
 
-  const canvasRef = useRef(null) // what the tile displays: the sent frame plus boxes
-  const videoRef = useRef(null) // hidden decoder for the camera stream
+  // The tile shows the live camera picture (videoRef) with transparent detection
+  // boxes on top (canvasRef). The picture therefore appears as soon as the camera
+  // starts, and does not wait for the AI server to answer.
+  const canvasRef = useRef(null)
+  const videoRef = useRef(null)
   const frameRef = useRef(null) // offscreen copy of the frame currently in flight
   const streamRef = useRef(null)
   const activeRef = useRef(false)
@@ -84,9 +87,6 @@ export function useBrowserCamera(camera) {
   const fpsRef = useRef({ last: 0, value: 0 })
   const stopAllRef = useRef(() => {})
 
-  if (!videoRef.current && typeof document !== 'undefined') {
-    videoRef.current = document.createElement('video')
-  }
   if (!frameRef.current && typeof document !== 'undefined') {
     frameRef.current = document.createElement('canvas')
   }
@@ -167,16 +167,17 @@ export function useBrowserCamera(camera) {
     }
   }, [id])
 
+  // Draws only the boxes, on a transparent overlay the size of the analysed frame.
   const paint = (result) => {
-    const display = canvasRef.current
+    const overlay = canvasRef.current
     const frame = frameRef.current
-    if (!display || !frame) return
+    if (!overlay || !frame) return
     const width = result.width || frame.width
     const height = result.height || frame.height
-    if (display.width !== width) display.width = width
-    if (display.height !== height) display.height = height
-    const ctx = display.getContext('2d')
-    ctx.drawImage(frame, 0, 0, width, height)
+    if (overlay.width !== width) overlay.width = width
+    if (overlay.height !== height) overlay.height = height
+    const ctx = overlay.getContext('2d')
+    ctx.clearRect(0, 0, width, height)
     drawDetections(ctx, result.detections || [], width, height)
   }
 
@@ -283,6 +284,7 @@ export function useBrowserCamera(camera) {
         }
       }
       const video = videoRef.current
+      if (!video) throw new Error('The video preview is not ready. Press Start again.')
       video.muted = true
       video.playsInline = true
       video.srcObject = stream
@@ -325,6 +327,7 @@ export function useBrowserCamera(camera) {
     fps,
     inferenceMs,
     canvasRef,
+    videoRef,
     devices,
     deviceId,
     setDevice,
